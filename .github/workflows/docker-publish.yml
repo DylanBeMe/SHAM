@@ -94,7 +94,7 @@ jobs:
           labels: |
             org.opencontainers.image.title=SHAM
             org.opencontainers.image.description=Self-hosted control plane for static sites and managed Node.js applications
-            org.opencontainers.image.licenses=GPL-3.0-or-later
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
 
       - name: Build and push image
         uses: docker/build-push-action@v7.3.0

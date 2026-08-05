@@ -39,4 +39,4 @@ Do not disclose vulnerabilities in an issue or pull request. Follow [SECURITY.md
 
 ## License
 
-By contributing, you agree that your contribution is licensed under GPL-3.0-or-later, the same license as the project.
+By contributing, you agree that your contribution is licensed under AGPL-3.0-or-later, the same license as the project.

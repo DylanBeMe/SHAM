@@ -26,7 +26,7 @@
     "multer": "2.2.0",
     "terser": "5.44.0"
   },
-  "license": "GPL-3.0-or-later",
+  "license": "AGPL-3.0-or-later",
   "private": true,
   "keywords": [
     "self-hosted",

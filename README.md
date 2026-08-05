@@ -1,6 +1,6 @@
 # SHAM — Simple Hosting And More
 
-**Current release: 1.0.0** · **License: GPL-3.0-or-later**
+**Current release: 1.0.0** · **License: AGPL-3.0-or-later**
 
 SHAM is a self-hosted control plane for deploying static websites and managed Node.js servers from one browser dashboard.
 
@@ -778,7 +778,7 @@ sham/
 
 ## License
 
-SHAM is licensed under the GNU General Public License, version 3 or (at your option) any later version (`GPL-3.0-or-later`). See [LICENSE](LICENSE) for the complete terms. SHAM is provided without warranty; modified and redistributed versions must preserve the applicable GPL notices and corresponding-source obligations.
+SHAM is licensed under the GNU Affero General Public License, version 3 or (at your option) any later version (`AGPL-3.0-or-later`). See [LICENSE](LICENSE) for the complete terms. SHAM is provided without warranty; modified and redistributed versions must preserve the applicable AGPL notices, corresponding-source obligations, and network-interaction source-offer requirements.
 
 ## Scope boundaries
 

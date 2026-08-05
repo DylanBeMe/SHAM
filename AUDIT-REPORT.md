@@ -135,7 +135,7 @@ The review combined:
 | SHAM updates | Signed archive validation, staging, persistent activation, rollback/cleanup | Reviewed and regression-tested |
 | Theme and localization | Built-in/custom theme state, locale, semantic color variables, public status theme | Reviewed; all used theme variables are defined |
 | Responsive UX | Navigation, cards, dialogs, action menus, tabs, toasts, switches, file inputs | Static layout regression checks pass; full device/browser visual QA remains recommended |
-| Documentation/license | Built-in docs, README, upload help, trust boundaries, GPL notice | Reviewed and expanded |
+| Documentation/license | Built-in docs, README, upload help, trust boundaries, AGPL notice | Reviewed and expanded |
 
 ## Authentication and unauthenticated exposure
 

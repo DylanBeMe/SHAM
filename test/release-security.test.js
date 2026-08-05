@@ -8,16 +8,16 @@ const { execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const read = (name) => fs.readFileSync(path.join(root, name), 'utf8');
 
-test('release is GPL-3.0-or-later and exposes the license from the interface', () => {
+test('release is AGPL-3.0-or-later and exposes the license from the interface', () => {
   const pkg = JSON.parse(read('package.json'));
   const license = read('LICENSE');
   const html = read('public/index.html');
   const server = read('src/server.js');
-  assert.equal(pkg.license, 'GPL-3.0-or-later');
-  assert.match(license, /GNU GENERAL PUBLIC LICENSE[\s\S]*Version 3, 29 June 2007/);
+  assert.equal(pkg.license, 'AGPL-3.0-or-later');
+  assert.match(license, /GNU AFFERO GENERAL PUBLIC LICENSE[\s\S]*Version 3, 19 November 2007/);
   assert.doesNotMatch(license, /^MIT License/m);
-  assert.match(html, /href="\/LICENSE"[\s\S]*GPL license/);
-  assert.match(html, /SHAM is licensed under <strong>GPL-3\.0-or-later<\/strong>/);
+  assert.match(html, /href="\/LICENSE"[\s\S]*AGPL license/);
+  assert.match(html, /SHAM is licensed under <strong>AGPL-3\.0-or-later<\/strong>/);
   assert.match(server, /app\.get\('\/LICENSE',[\s\S]*ROOT_DIR, 'LICENSE'/);
 });
 

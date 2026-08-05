@@ -11,7 +11,7 @@ const requireCondition = (condition, message) => { if (!condition) failures.push
 
 const pkg = JSON.parse(read('package.json'));
 requireCondition(pkg.version === '1.0.0', 'package.json version must be 1.0.0.');
-requireCondition(pkg.license === 'GPL-3.0-or-later', 'package.json must declare GPL-3.0-or-later.');
+requireCondition(pkg.license === 'AGPL-3.0-or-later', 'package.json must declare AGPL-3.0-or-later.');
 requireCondition(pkg.private === true, 'The application package should remain private to prevent accidental npm publication.');
 
 for (const filename of [
@@ -20,7 +20,7 @@ for (const filename of [
   '.github/dependabot.yml', 'Dockerfile', 'docker-compose.yml', '.env.example'
 ]) requireCondition(exists(filename), `Required release file is missing: ${filename}`);
 
-requireCondition(/GNU GENERAL PUBLIC LICENSE[\s\S]*Version 3, 29 June 2007/.test(read('LICENSE')), 'LICENSE must contain GPL version 3.');
+requireCondition(/GNU AFFERO GENERAL PUBLIC LICENSE[\s\S]*Version 3, 19 November 2007/.test(read('LICENSE')), 'LICENSE must contain GNU Affero GPL version 3.');
 requireCondition(/Current release: 1\.0\.0/.test(read('README.md')), 'README must identify release 1.0.0.');
 requireCondition(/ghcr\.io\/<owner>\/<repository>/.test(read('RELEASING.md')), 'RELEASING.md must explain GHCR image names.');
 requireCondition(/packages:\s*write/.test(read('.github/workflows/docker-publish.yml')), 'Docker workflow must request package write permission.');

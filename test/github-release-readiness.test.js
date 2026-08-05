@@ -9,7 +9,7 @@ const read = (name) => fs.readFileSync(path.join(root, name), 'utf8');
 test('public release metadata is coherent for SHAM 1.0.0', () => {
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.version, '1.0.0');
-  assert.equal(pkg.license, 'GPL-3.0-or-later');
+  assert.equal(pkg.license, 'AGPL-3.0-or-later');
   assert.equal(pkg.private, true);
   assert.match(read('README.md'), /Current release: 1\.0\.0/);
   assert.match(read('CHANGELOG.md'), /## \[1\.0\.0\] — 2026-08-05/);
