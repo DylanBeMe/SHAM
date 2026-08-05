@@ -78,3 +78,16 @@ test('changing a site domain invalidates the stored Cloudflare synchronization s
   assert.match(route, /if \(domainChanged\) config\.cloudflare_enabled = false/);
   assert.match(route, /marked Cloudflare DNS as unsynchronized/);
 });
+
+test('site creation INSERT has one value expression per listed column', () => {
+  const source = fs.readFileSync(path.join(root, 'src', 'server.js'), 'utf8');
+  const routeStart = source.indexOf("app.post('/api/sites'");
+  const routeEnd = source.indexOf("app.put('/api/sites/:id'", routeStart);
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
+  const route = source.slice(routeStart, routeEnd);
+  const insert = route.match(/INSERT INTO sites \(\s*([\s\S]*?)\s*\) VALUES \(\s*([\s\S]*?)\s*\)/);
+  assert.ok(insert, 'site creation INSERT statement not found');
+  const columns = insert[1].split(',').map((value) => value.trim()).filter(Boolean);
+  const values = insert[2].split(',').map((value) => value.trim()).filter(Boolean);
+  assert.equal(values.length, columns.length);
+});
