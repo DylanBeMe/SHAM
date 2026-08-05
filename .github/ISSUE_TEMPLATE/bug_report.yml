@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible SHAM problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not report security vulnerabilities here. Use the private process in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: SHAM version
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation type
+      options:
+        - Docker / Compose
+        - Native Node.js
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant redacted logs
+      description: Remove tokens, cookies, domains, IP addresses, paths, and other sensitive data.
+      render: shell
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, CPU architecture, Node/Docker version, browser, proxy/CDN, and storage type.

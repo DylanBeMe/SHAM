@@ -1,0 +1,358 @@
+const path = require('node:path');
+const net = require('node:net');
+
+const BLOCKED_HEADERS = new Set([
+  'connection', 'content-length', 'host', 'keep-alive', 'proxy-authenticate',
+  'proxy-authorization', 'set-cookie', 'te', 'trailer', 'transfer-encoding', 'upgrade'
+]);
+
+function strictInteger(value, label) {
+  const raw = String(value ?? '').trim();
+  if (!/^-?\d+$/.test(raw)) throw new Error(`${label} must be an integer.`);
+  const number = Number(raw);
+  if (!Number.isSafeInteger(number)) throw new Error(`${label} must be a safe integer.`);
+  return number;
+}
+
+function boundedInteger(value, label, fallback, min, max) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const number = strictInteger(value, label);
+  if (number < min || number > max) throw new Error(`${label} must be between ${min} and ${max}.`);
+  return number;
+}
+
+function bool(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (value === true || value === 1) return true;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
+}
+
+function safeRelativePath(value, label = 'Path') {
+  const raw = String(value || '').replaceAll('\\', '/').trim();
+  if (!raw || raw.includes('\0') || raw.startsWith('/') || /^[A-Za-z]:\//.test(raw)) {
+    throw new Error(`${label} must be a relative path.`);
+  }
+  const normalized = path.posix.normalize(raw).replace(/^\.\//, '');
+  if (!normalized || normalized === '.' || normalized === '..' || normalized.startsWith('../')) {
+    throw new Error(`${label} is not safe.`);
+  }
+  return normalized;
+}
+
+function slugify(value) {
+  const slug = String(value || '')
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+  return slug || 'site';
+}
+
+function validateHeaders(input) {
+  let parsed = input;
+  if (typeof input === 'string') {
+    const trimmed = input.trim();
+    parsed = trimmed ? JSON.parse(trimmed) : {};
+  }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+    throw new Error('Headers must be a JSON object.');
+  }
+  const entries = Object.entries(parsed);
+  if (entries.length > 50) throw new Error('A site can define at most 50 custom headers.');
+
+  const result = {};
+  for (const [name, rawValue] of entries) {
+    const lower = name.toLowerCase();
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || BLOCKED_HEADERS.has(lower)) {
+      throw new Error(`Header “${name}” is not allowed.`);
+    }
+    const value = String(rawValue);
+    if (value.length > 2048 || /[\r\n]/.test(value)) throw new Error(`Header “${name}” has an invalid value.`);
+    result[name] = value;
+  }
+  return result;
+}
+
+function validateBindHost(value) {
+  const host = String(value || '127.0.0.1').trim();
+  if (host === 'localhost' || net.isIP(host)) return host;
+  throw new Error('Bind address must be localhost or a valid IPv4/IPv6 address.');
+}
+
+function validateDomain(value) {
+  const domain = String(value || '').trim().toLowerCase().replace(/\.$/, '');
+  if (!domain) return '';
+  if (domain.length > 253 || !domain.includes('.') || !/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(domain)) {
+    throw new Error('Domain must be a valid hostname such as app.example.com.');
+  }
+  return domain;
+}
+
+function splitList(value) {
+  if (Array.isArray(value)) return value.map(String);
+  return String(value || '').split(/[\s,;]+/);
+}
+
+function validateIpOrCidr(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized) return '';
+  const parts = normalized.split('/');
+  if (parts.length > 2) throw new Error(`“${normalized}” is not a valid IP address or CIDR range.`);
+  const [ip, prefixRaw] = parts;
+  const version = net.isIP(ip);
+  if (!version) throw new Error(`“${normalized}” is not a valid IP address or CIDR range.`);
+  if (prefixRaw === undefined) return ip;
+  if (!/^\d+$/.test(prefixRaw)) throw new Error(`“${normalized}” has an invalid CIDR prefix.`);
+  const prefix = Number(prefixRaw);
+  const maximum = version === 4 ? 32 : 128;
+  if (prefix < 0 || prefix > maximum) throw new Error(`“${normalized}” has an invalid CIDR prefix.`);
+  return `${ip}/${prefix}`;
+}
+
+function validateIpList(value, label) {
+  const result = [];
+  for (const item of splitList(value)) {
+    if (!item.trim()) continue;
+    result.push(validateIpOrCidr(item));
+    if (result.length > 250) throw new Error(`${label} can contain at most 250 entries.`);
+  }
+  return [...new Set(result)];
+}
+
+function validateCountryList(value, label) {
+  const result = splitList(value).map((item) => item.trim().toUpperCase()).filter(Boolean);
+  if (result.length > 250) throw new Error(`${label} can contain at most 250 entries.`);
+  for (const country of result) {
+    if (!/^(?:[A-Z]{2}|T1)$/.test(country)) throw new Error(`${label} must use two-letter country codes such as US, NL, or DE; T1 represents Tor traffic.`);
+  }
+  return [...new Set(result)];
+}
+
+function parseFirewallDefaults(defaults = {}) {
+  if (defaults.firewall && typeof defaults.firewall === 'object') return defaults.firewall;
+  try { return JSON.parse(defaults.firewall_json || '{}'); }
+  catch { return {}; }
+}
+
+function validateFirewall(body, defaults = {}) {
+  const previous = parseFirewallDefaults(defaults);
+  const mode = String(body.firewallMode ?? body.firewall_mode ?? previous.mode ?? 'local').toLowerCase();
+  if (!['local', 'cloudflare', 'both'].includes(mode)) throw new Error('Firewall mode must be local, Cloudflare, or both.');
+  const cloudflareAction = String(body.firewallCloudflareAction ?? body.firewall_cloudflare_action ?? previous.cloudflareAction ?? 'managed_challenge').toLowerCase();
+  if (!['block', 'managed_challenge'].includes(cloudflareAction)) throw new Error('Cloudflare firewall action must be block or managed challenge.');
+
+  return {
+    mode,
+    cloudflareAction,
+    rateLimitPerMinute: boundedInteger(body.firewallRateLimit ?? body.firewall_rate_limit, 'Firewall rate limit', Number(previous.rateLimitPerMinute || 0), 0, 100000),
+    maxBodyKb: boundedInteger(body.firewallMaxBodyKb ?? body.firewall_max_body_kb, 'Firewall request-body limit', Number(previous.maxBodyKb || 0), 0, 1048576),
+    blockedIps: validateIpList(body.firewallBlockedIps ?? body.firewall_blocked_ips ?? previous.blockedIps ?? [], 'Blocked IP list'),
+    allowedIps: validateIpList(body.firewallAllowedIps ?? body.firewall_allowed_ips ?? previous.allowedIps ?? [], 'Allowed IP list'),
+    blockedCountries: validateCountryList(body.firewallBlockedCountries ?? body.firewall_blocked_countries ?? previous.blockedCountries ?? [], 'Blocked country list'),
+    allowedCountries: validateCountryList(body.firewallAllowedCountries ?? body.firewall_allowed_countries ?? previous.allowedCountries ?? [], 'Allowed country list'),
+    blockBots: bool(body.firewallBlockBots ?? body.firewall_block_bots, Boolean(previous.blockBots))
+  };
+}
+
+function validateHealthPath(value) {
+  const raw = String(value || '/').trim();
+  if (!raw.startsWith('/') || raw.length > 500 || /[\r\n]/.test(raw)) throw new Error('Health-check path must begin with / and be at most 500 characters.');
+  try { return new URL(raw, 'http://localhost').pathname + new URL(raw, 'http://localhost').search; }
+  catch { throw new Error('Health-check path is invalid.'); }
+}
+
+function validateCsp(value) {
+  const raw = String(value || '').trim();
+  if (raw.length > 8000 || /[\r\n]/.test(raw)) throw new Error('Custom Content Security Policy is invalid or exceeds 8,000 characters.');
+  return raw;
+}
+
+
+function parseJsonValue(value, fallback, label) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(String(value)); }
+  catch { throw new Error(`${label} must be valid JSON.`); }
+}
+
+function validateRedirects(value, defaults = []) {
+  const parsed = parseJsonValue(value, defaults, 'Redirect rules');
+  if (!Array.isArray(parsed) || parsed.length > 100) throw new Error('Redirect rules must be an array with at most 100 entries.');
+  return parsed.map((rule, index) => {
+    if (!rule || typeof rule !== 'object' || Array.isArray(rule)) throw new Error(`Redirect rule ${index + 1} is invalid.`);
+    const type = rule.type === 'prefix' ? 'prefix' : 'exact';
+    const from = String(rule.from || '').trim();
+    const to = String(rule.to || '').trim();
+    const status = Number(rule.status || 308);
+    if (!from.startsWith('/') || from.length > 1000 || !to || to.length > 2000 || /[\r\n]/.test(to) || ![301, 302, 307, 308].includes(status)) throw new Error(`Redirect rule ${index + 1} is invalid.`);
+    return { type, from, to, status };
+  });
+}
+
+function validateErrorPages(value, defaults = {}) {
+  const parsed = parseJsonValue(value, defaults, 'Error pages');
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Error pages must be a JSON object.');
+  const result = {};
+  for (const [key, page] of Object.entries(parsed)) {
+    if (!/^(?:4\d\d|5\d\d|default)$/.test(key)) throw new Error(`Error page key “${key}” is invalid.`);
+    const html = String(page || '');
+    if (html.length > 256 * 1024 || html.includes('\0')) throw new Error(`Error page “${key}” is too large or invalid.`);
+    result[key] = html;
+  }
+  return result;
+}
+
+function validateCacheRules(value, defaults = []) {
+  const parsed = parseJsonValue(value, defaults, 'Cache rules');
+  if (!Array.isArray(parsed) || parsed.length > 100) throw new Error('Cache rules must be an array with at most 100 entries.');
+  return parsed.map((rule, index) => {
+    const type = rule?.type === 'prefix' ? 'prefix' : 'exact';
+    const rulePath = String(rule?.path || '').trim();
+    const seconds = boundedInteger(rule?.seconds, `Cache rule ${index + 1} duration`, 0, 0, 31_536_000);
+    if (!rulePath.startsWith('/') || rulePath.length > 1000) throw new Error(`Cache rule ${index + 1} path is invalid.`);
+    return { type, path: rulePath, seconds, immutable: bool(rule?.immutable, false) };
+  });
+}
+
+function validateContainerImage(value) {
+  const image = String(value || 'node:22-alpine').trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,255}$/.test(image)) throw new Error('Container image is invalid.');
+  return image;
+}
+
+function validateOptionalHostname(value, label) {
+  const raw = String(value || '').trim().toLowerCase().replace(/\.$/, '');
+  if (!raw) return '';
+  return validateDomain(raw);
+}
+
+function validateSiteInput(body, defaults = {}) {
+  const name = String(body.name ?? defaults.name ?? '').trim();
+  if (name.length < 1 || name.length > 100) throw new Error('Site name must be 1–100 characters.');
+
+  const port = strictInteger(body.port ?? defaults.port, 'Port');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Port must be between 1 and 65535.');
+
+  const cacheSeconds = strictInteger(body.cacheSeconds ?? body.cache_seconds ?? defaults.cache_seconds ?? 0, 'Cache duration');
+  if (!Number.isInteger(cacheSeconds) || cacheSeconds < 0 || cacheSeconds > 31_536_000) {
+    throw new Error('Cache duration must be between 0 and 31,536,000 seconds.');
+  }
+
+  const runtimeType = String(body.runtimeType ?? body.runtime_type ?? defaults.runtime_type ?? 'static');
+  if (!['static', 'node'].includes(runtimeType)) throw new Error('Runtime type must be static or node.');
+  const securityPreset = String(body.securityPreset ?? body.security_preset ?? defaults.security_preset ?? 'balanced').toLowerCase();
+  if (!['off', 'balanced', 'strict', 'custom'].includes(securityPreset)) throw new Error('Security-header preset must be off, balanced, strict, or custom.');
+  const restartPolicy = String(body.restartPolicy ?? body.restart_policy ?? defaults.restart_policy ?? 'on-failure').toLowerCase();
+  if (!['never', 'on-failure', 'always'].includes(restartPolicy)) throw new Error('Restart policy must be never, on-failure, or always.');
+
+  const domain = validateDomain(body.domain ?? defaults.domain ?? '');
+  const domainOnly = bool(body.domainOnly ?? body.domain_only, Boolean(defaults.domain_only));
+  if (domainOnly && !domain) throw new Error('Configure a domain before enabling domain-only access.');
+  const edgeEnabled = bool(body.edgeEnabled ?? body.edge_enabled, Boolean(defaults.edge_enabled));
+  if (edgeEnabled && !domain) throw new Error('Configure a domain before enabling the shared 80/443 edge proxy.');
+  const cloudflareEnabled = bool(body.cloudflareEnabled ?? body.cloudflare_enabled, Boolean(defaults.cloudflare_enabled));
+  const firewallEnabled = bool(body.firewallEnabled ?? body.firewall_enabled, Boolean(defaults.firewall_enabled));
+  const firewall = validateFirewall(body, defaults);
+  const usesLocalCountryRules = firewallEnabled
+    && ['local', 'both'].includes(firewall.mode)
+    && (firewall.allowedCountries.length || firewall.blockedCountries.length);
+  if (usesLocalCountryRules && !cloudflareEnabled) {
+    throw new Error('Local country rules require a synchronized Cloudflare proxy so SHAM can trust country metadata. Use Cloudflare-only mode first, sync Cloudflare, then enable local + Cloudflare if needed.');
+  }
+
+  const obfuscate = bool(body.obfuscate, Boolean(defaults.obfuscate));
+  const obfuscationRiskAcknowledged = bool(
+    body.obfuscationRiskAcknowledged ?? body.obfuscation_risk_acknowledged,
+    Boolean(defaults.obfuscation_risk_acknowledged)
+  );
+  if (obfuscate && !obfuscationRiskAcknowledged) {
+    throw new Error('Confirm that JavaScript obfuscation can change runtime behavior before enabling it. Run the compatibility report when editing an existing site.');
+  }
+
+  const runtimeIsolation = String(body.runtimeIsolation ?? body.runtime_isolation ?? defaults.runtime_isolation ?? 'process').toLowerCase();
+  if (!['process', 'docker'].includes(runtimeIsolation)) throw new Error('Runtime isolation must be process or docker.');
+  if (runtimeType !== 'node' && runtimeIsolation === 'docker') throw new Error('Docker runtime isolation currently applies to Node.js sites.');
+  const anubisEnabled = bool(body.anubisEnabled ?? body.anubis_enabled, Boolean(defaults.anubis_enabled));
+  const anubisPreset = String(body.anubisPreset ?? body.anubis_preset ?? defaults.anubis_preset ?? 'balanced').toLowerCase();
+  if (!['balanced', 'aggressive', 'search-friendly', 'custom'].includes(anubisPreset)) throw new Error('Anubis preset is invalid.');
+  if (anubisEnabled && !edgeEnabled) throw new Error('Anubis requires the shared edge proxy so direct-origin traffic cannot bypass it.');
+  const maintenanceHtml = String(body.maintenanceHtml ?? body.maintenance_html ?? defaults.maintenance_html ?? '');
+  if (maintenanceHtml.length > 256 * 1024 || maintenanceHtml.includes('\0')) throw new Error('Maintenance page is too large or invalid.');
+  const anubisPolicy = String(body.anubisPolicy ?? body.anubis_policy ?? defaults.anubis_policy ?? '');
+  if (anubisPolicy.length > 256 * 1024 || anubisPolicy.includes('\0')) throw new Error('Anubis policy is too large or invalid.');
+  if (anubisPolicy && /^metrics\s*:/m.test(anubisPolicy)) throw new Error('The top-level Anubis metrics section is managed by SHAM. Remove it from the custom policy.');
+
+  return {
+    name,
+    slug: slugify(body.slug ?? defaults.slug ?? name),
+    bind_host: validateBindHost(body.bindHost ?? body.bind_host ?? defaults.bind_host),
+    port,
+    runtime_type: runtimeType,
+    entry_file: safeRelativePath(body.entryFile ?? body.entry_file ?? defaults.entry_file ?? 'index.html', 'Entry file'),
+    node_entry: safeRelativePath(body.nodeEntry ?? body.node_entry ?? defaults.node_entry ?? 'server.js', 'Node entry file'),
+    install_dependencies: bool(body.installDependencies ?? body.install_dependencies, Boolean(defaults.install_dependencies)),
+    minify: bool(body.minify, Boolean(defaults.minify)),
+    obfuscate,
+    obfuscation_risk_acknowledged: obfuscationRiskAcknowledged,
+    domain_only: domainOnly,
+    spa_fallback: bool(body.spaFallback ?? body.spa_fallback, Boolean(defaults.spa_fallback)),
+    cache_seconds: cacheSeconds,
+    headers: validateHeaders(body.headers ?? body.headers_json ?? defaults.headers_json ?? '{}'),
+    enabled: bool(body.enabled, Boolean(defaults.enabled)),
+    domain,
+    ssl_enabled: bool(body.sslEnabled ?? body.ssl_enabled, Boolean(defaults.ssl_enabled)),
+    cloudflare_enabled: cloudflareEnabled,
+    firewall_enabled: firewallEnabled,
+    firewall,
+    compression: bool(body.compression, defaults.compression === undefined ? true : Boolean(defaults.compression)),
+    security_preset: securityPreset,
+    csp: validateCsp(body.csp ?? defaults.csp ?? ''),
+    health_check_path: validateHealthPath(body.healthCheckPath ?? body.health_check_path ?? defaults.health_check_path ?? '/'),
+    health_check_interval: boundedInteger(body.healthCheckInterval ?? body.health_check_interval, 'Health-check interval', Number(defaults.health_check_interval || 30), 5, 3600),
+    restart_policy: restartPolicy,
+    max_restarts: boundedInteger(body.maxRestarts ?? body.max_restarts, 'Maximum automatic restarts', Number(defaults.max_restarts || 5), 0, 100),
+    memory_limit_mb: boundedInteger(body.memoryLimitMb ?? body.memory_limit_mb, 'Memory limit', Number(defaults.memory_limit_mb || 0), 0, 1048576),
+    max_connections: boundedInteger(body.maxConnections ?? body.max_connections, 'Maximum connections', Number(defaults.max_connections || 0), 0, 1000000),
+    edge_enabled: edgeEnabled,
+    runtime_isolation: runtimeIsolation,
+    container_image: validateContainerImage(body.containerImage ?? body.container_image ?? defaults.container_image ?? 'node:22-alpine'),
+    cpu_limit: Math.min(Math.max(Number(body.cpuLimit ?? body.cpu_limit ?? defaults.cpu_limit ?? 0) || 0, 0), 256),
+    pids_limit: boundedInteger(body.pidsLimit ?? body.pids_limit, 'Container process limit', Number(defaults.pids_limit || 128), 16, 65535),
+    outbound_network: bool(body.outboundNetwork ?? body.outbound_network, defaults.outbound_network === undefined ? true : Boolean(defaults.outbound_network)),
+    anubis_enabled: anubisEnabled,
+    anubis_preset: anubisPreset,
+    anubis_difficulty: boundedInteger(body.anubisDifficulty ?? body.anubis_difficulty, 'Anubis difficulty', Number(defaults.anubis_difficulty || 4), 1, 10),
+    anubis_policy: anubisPolicy,
+    maintenance_enabled: bool(body.maintenanceEnabled ?? body.maintenance_enabled, Boolean(defaults.maintenance_enabled)),
+    maintenance_html: maintenanceHtml,
+    redirects: validateRedirects(body.redirects ?? body.redirects_json, defaults.redirects || (() => { try { return JSON.parse(defaults.redirects_json || '[]'); } catch { return []; } })()),
+    error_pages: validateErrorPages(body.errorPages ?? body.error_pages_json, defaults.errorPages || (() => { try { return JSON.parse(defaults.error_pages_json || '{}'); } catch { return {}; } })()),
+    cache_rules: validateCacheRules(body.cacheRules ?? body.cache_rules_json, defaults.cacheRules || (() => { try { return JSON.parse(defaults.cache_rules_json || '[]'); } catch { return []; } })()),
+    release_mode: bool(body.releaseMode ?? body.release_mode, Boolean(defaults.release_mode)),
+    git_url: String(body.gitUrl ?? body.git_url ?? defaults.git_url ?? '').trim().slice(0, 2048),
+    git_branch: String(body.gitBranch ?? body.git_branch ?? defaults.git_branch ?? 'main').trim().slice(0, 200) || 'main',
+    preview_domain: validateOptionalHostname(body.previewDomain ?? body.preview_domain ?? defaults.preview_domain ?? '', 'Preview domain')
+  };
+}
+
+module.exports = {
+  bool,
+  safeRelativePath,
+  slugify,
+  validateHeaders,
+  validateBindHost,
+  validateDomain,
+  validateIpOrCidr,
+  validateIpList,
+  validateCountryList,
+  validateFirewall,
+  validateHealthPath,
+  validateCsp,
+  validateRedirects,
+  validateErrorPages,
+  validateCacheRules,
+  validateContainerImage,
+  validateSiteInput
+};

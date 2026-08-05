@@ -1,0 +1,27 @@
+# Optional overlay for Docker-isolated sites and Anubis sidecars.
+# The Docker socket gives SHAM control over containers on the host. Use this
+# only on a dedicated server and never expose the dashboard to untrusted users.
+# Before starting, export:
+#   SHAM_DOCKER_HOST_DATA_PATH="$(pwd)/sham-data"
+#   DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+services:
+  sham:
+    environment:
+      SHAM_DOCKER_HOST_DATA_PATH: ${SHAM_DOCKER_HOST_DATA_PATH:?Set the absolute host path mounted at /data}
+      SHAM_DOCKER_INTERNAL_NETWORK: ${SHAM_DOCKER_INTERNAL_NETWORK:-sham-runtime-internal}
+      SHAM_DOCKER_EGRESS_NETWORK: ${SHAM_DOCKER_EGRESS_NETWORK:-sham-runtime-egress}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - ${DOCKER_GID:-999}
+    networks:
+      - default
+      - sham_runtime_internal
+      - sham_runtime_egress
+
+networks:
+  sham_runtime_internal:
+    name: ${SHAM_DOCKER_INTERNAL_NETWORK:-sham-runtime-internal}
+    internal: true
+  sham_runtime_egress:
+    name: ${SHAM_DOCKER_EGRESS_NETWORK:-sham-runtime-egress}

@@ -1,0 +1,47 @@
+{
+  "id": "welcome-cards",
+  "name": "Welcome Cards",
+  "version": "1.0.0",
+  "type": "json",
+  "description": "A declarative JSON plugin that reads SHAM data and adds an overview card and dashboard page.",
+  "settings": [
+    {
+      "key": "greeting",
+      "label": "Greeting",
+      "type": "text",
+      "default": "Welcome to SHAM",
+      "description": "Stored as plugin-owned settings and available to future plugin versions."
+    }
+  ],
+  "queries": {
+    "siteCount": {
+      "mode": "get",
+      "sql": "SELECT COUNT(*) AS count FROM sites"
+    },
+    "runningCount": {
+      "mode": "get",
+      "sql": "SELECT COUNT(*) AS count FROM sites WHERE enabled = 1"
+    }
+  },
+  "ui": {
+    "dashboardCards": [
+      {
+        "label": "Sites from JSON plugin",
+        "action": "siteCount",
+        "valuePath": "count",
+        "description": "Read through a declarative query"
+      }
+    ],
+    "pages": [
+      {
+        "id": "welcome",
+        "title": "Plugin Welcome",
+        "description": "This page and its data bindings were declared in plugin.json without executable JavaScript.",
+        "cards": [
+          { "label": "Configured sites", "action": "siteCount", "valuePath": "count", "description": "SQLite query result" },
+          { "label": "Enabled sites", "action": "runningCount", "valuePath": "count", "description": "Declarative data action" }
+        ]
+      }
+    ]
+  }
+}
