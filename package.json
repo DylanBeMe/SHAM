@@ -13,7 +13,7 @@
     "release:check": "npm run check && npm test && node scripts/release-check.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "adm-zip": "0.6.0",

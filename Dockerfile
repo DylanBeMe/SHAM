@@ -2,7 +2,7 @@ ARG VERSION=1.0.0
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 
-FROM node:20-bookworm-slim AS dependencies
+FROM node:22-bookworm-slim AS dependencies
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \
@@ -11,7 +11,7 @@ COPY package*.json ./
 RUN if [ -f package-lock.json ]; then npm ci --omit=dev --no-fund; else npm install --omit=dev --no-fund; fi \
     && npm audit --omit=dev --audit-level=high
 
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 ARG VERSION
 ARG VCS_REF
 ARG BUILD_DATE
