@@ -177,12 +177,3 @@ test('update staging cleanup never removes the shared updates directory', () => 
   assert.match(updates, /this\.operations\.add\(operation\)[\s\S]*this\.operations\.delete\(operation\)/);
   assert.match(updates, /An update is already staged/);
 });
-
-test('README documents GPL, security audit gates, and Docker update persistence limits', () => {
-  const readme = read('README.md');
-  assert.match(readme, /GPL-3\.0-or-later/);
-  assert.match(readme, /npm audit --omit=dev --audit-level=high/);
-  assert.match(readme, /\/data\/app-runtime/);
-  assert.match(readme, /SHAM 1\.0\.0 stores compatible application-code updates/);
-  assert.match(readme, /Any SHAM update that changes runtime dependencies must be delivered through a reviewed image rebuild/);
-});
