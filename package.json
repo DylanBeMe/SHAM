@@ -1,0 +1,41 @@
+{
+  "name": "simple-hosting-and-more",
+  "version": "1.0.0",
+  "description": "SHAM is a self-hosted control plane for securely deploying static websites and managed Node.js applications.",
+  "main": "src/bootstrap.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/bootstrap.js",
+    "dev": "node --watch src/server.js",
+    "check": "node --check src/env.js && node --check src/process-env.js && node --check src/config.js && node --check src/secret-store.js && node --check src/mfa.js && node --check src/webauthn.js && node --check src/performance-monitor.js && node --check src/dependency-scanner.js && node --check src/snapshot-worker.js && node --check src/snapshot-manager.js && node --check src/edge-proxy.js && node --check src/plugin-signing.js && node --check src/plugin-sandbox-worker.js && node --check src/db.js && node --check src/security.js && node --check src/validation.js && node --check src/upload-storage.js && node --check src/upload-utils.js && node --check src/plugin-archive.js && node --check src/plugin-archive-worker.js && node --check src/minify-worker.js && node --check src/obfuscation-audit.js && node --check src/file-utils.js && node --check src/integrations.js && node --check src/plugin-manager.js && node --check src/site-manager.js && node --check src/server.js && node --check src/operations-manager.js && node --check src/update-manager.js && node --check src/update-worker.js && node --check src/bootstrap.js && node --check public/theme-init.js && node --check public/world-map.js && node --check public/app.js",
+    "test": "node --test test/*.test.js",
+    "security": "npm audit --omit=dev --audit-level=high",
+    "release:check": "npm run check && npm test && node scripts/release-check.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "adm-zip": "0.6.0",
+    "better-sqlite3": "13.0.1",
+    "clean-css": "5.3.3",
+    "express": "5.2.0",
+    "html-minifier-terser": "7.2.0",
+    "http-proxy": "1.18.1",
+    "jsonwebtoken": "9.0.3",
+    "multer": "2.2.0",
+    "terser": "5.44.0"
+  },
+  "license": "GPL-3.0-or-later",
+  "private": true,
+  "keywords": [
+    "self-hosted",
+    "hosting",
+    "deployment",
+    "static-sites",
+    "nodejs",
+    "docker",
+    "sqlite",
+    "control-plane"
+  ]
+}

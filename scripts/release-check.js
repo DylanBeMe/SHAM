@@ -1,0 +1,52 @@
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const root = path.resolve(__dirname, '..');
+const read = (name) => fs.readFileSync(path.join(root, name), 'utf8');
+const exists = (name) => fs.existsSync(path.join(root, name));
+const failures = [];
+const requireCondition = (condition, message) => { if (!condition) failures.push(message); };
+
+const pkg = JSON.parse(read('package.json'));
+requireCondition(pkg.version === '1.0.0', 'package.json version must be 1.0.0.');
+requireCondition(pkg.license === 'GPL-3.0-or-later', 'package.json must declare GPL-3.0-or-later.');
+requireCondition(pkg.private === true, 'The application package should remain private to prevent accidental npm publication.');
+
+for (const filename of [
+  'LICENSE', 'README.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'RELEASING.md', 'SECURITY.md',
+  '.github/workflows/ci.yml', '.github/workflows/docker-publish.yml', '.github/workflows/release.yml',
+  '.github/dependabot.yml', 'Dockerfile', 'docker-compose.yml', '.env.example'
+]) requireCondition(exists(filename), `Required release file is missing: ${filename}`);
+
+requireCondition(/GNU GENERAL PUBLIC LICENSE[\s\S]*Version 3, 29 June 2007/.test(read('LICENSE')), 'LICENSE must contain GPL version 3.');
+requireCondition(/Current release: 1\.0\.0/.test(read('README.md')), 'README must identify release 1.0.0.');
+requireCondition(/ghcr\.io\/<owner>\/<repository>/.test(read('RELEASING.md')), 'RELEASING.md must explain GHCR image names.');
+requireCondition(/packages:\s*write/.test(read('.github/workflows/docker-publish.yml')), 'Docker workflow must request package write permission.');
+requireCondition(/npm audit --omit=dev --audit-level=high/.test(read('.github/workflows/ci.yml')), 'CI must fail on high-severity production dependency advisories.');
+
+for (const [forbidden, message] of [
+  ['.env', 'A real .env file must not be committed.'],
+  ['data/.jwt-secret', 'A generated JWT secret must not be included in the source tree.'],
+  ['data/sham.db', 'The runtime database must not be included in the source tree.'],
+  ['data/sham.db-wal', 'The SQLite WAL file must not be included in the source tree.'],
+  ['data/sham.db-shm', 'The SQLite shared-memory file must not be included in the source tree.'],
+  ['data/master-key.json', 'The encrypted-secret master key must not be included in the source tree.'],
+  ['sham-data', 'The Docker runtime-data directory must not be included in the source tree.']
+]) requireCondition(!exists(forbidden), message);
+
+const releaseWorkflow = read('.github/workflows/release.yml');
+requireCondition(/--exclude 'data\/'/.test(releaseWorkflow), 'Tagged release archives must exclude the runtime data directory.');
+requireCondition(/data\/sites\/\.gitkeep/.test(releaseWorkflow) && /data\/plugins\/\.gitkeep/.test(releaseWorkflow), 'Tagged release archives must recreate only safe data placeholders.');
+
+if (!exists('package-lock.json')) {
+  console.warn('Release warning: package-lock.json is not committed. Tagged GitHub workflows will refuse to publish until the Prepare lockfile pull request is merged.');
+}
+
+if (failures.length) {
+  for (const failure of failures) console.error(`- ${failure}`);
+  process.exit(1);
+}
+
+console.log(`SHAM ${pkg.version} release metadata and repository files are coherent.`);

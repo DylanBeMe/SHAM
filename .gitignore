@@ -1,0 +1,20 @@
+node_modules/
+.env
+*.log
+npm-debug.log*
+.DS_Store
+.vscode/
+.idea/
+coverage/
+
+# Runtime data (the path can be changed with SHAM_DATA_PATH)
+data/*
+!data/sites/
+!data/sites/.gitkeep
+!data/plugins/
+!data/plugins/.gitkeep
+sham-data/
+
+# Generated temporary deployment/plugin directories
+*.staging-*
+*.backup-*

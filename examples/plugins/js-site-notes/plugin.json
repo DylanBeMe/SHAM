@@ -1,0 +1,29 @@
+{
+  "id": "site-notes",
+  "name": "Site Notes",
+  "version": "1.0.0",
+  "type": "js",
+  "description": "A JavaScript plugin that reads SHAM data, stores plugin settings, exposes an API action, and renders a dashboard page.",
+  "main": "index.js",
+  "client": "client.js",
+  "isolation": "worker",
+  "permissions": [
+    "data:read",
+    "settings:read",
+    "ui:dashboard"
+  ],
+  "settings": [
+    {
+      "key": "heading",
+      "label": "Page heading",
+      "type": "text",
+      "default": "Site inventory"
+    },
+    {
+      "key": "showPorts",
+      "label": "Show listener ports",
+      "type": "checkbox",
+      "default": true
+    }
+  ]
+}
