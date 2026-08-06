@@ -406,6 +406,8 @@ db.exec(`
   INSERT OR IGNORE INTO settings (key, value) VALUES ('cloudflare_api_token', '');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('cloudflare_zone_id', '');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('cloudflare_target_ip', '');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('cloudflare_tunnel_enabled', '0');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('cloudflare_tunnel_token', '');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('certbot_email', '');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('plugin_trusted_keys_json', '[]');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('allow_unsigned_plugins', '0');

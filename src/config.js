@@ -171,6 +171,7 @@ module.exports = {
   EDGE_HTTP_PORT: integerEnv('SHAM_EDGE_HTTP_PORT', 0, 0, 65535),
   EDGE_HTTPS_PORT: integerEnv('SHAM_EDGE_HTTPS_PORT', 0, 0, 65535),
   CERTBOT_BIN: process.env.SHAM_CERTBOT_BIN || 'certbot',
+  CLOUDFLARED_BIN: process.env.SHAM_CLOUDFLARED_BIN || 'cloudflared',
   DOCKER_BIN: process.env.SHAM_DOCKER_BIN || 'docker',
   DOCKER_INTERNAL_NETWORK: process.env.SHAM_DOCKER_INTERNAL_NETWORK || 'sham-internal',
   DOCKER_EGRESS_NETWORK: process.env.SHAM_DOCKER_EGRESS_NETWORK || '',

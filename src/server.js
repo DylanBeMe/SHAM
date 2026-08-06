@@ -71,6 +71,7 @@ const { EdgeProxy } = require('./edge-proxy');
 const { validatePluginArchiveFile } = require('./plugin-archive');
 const { OperationsManager } = require('./operations-manager');
 const { UpdateManager } = require('./update-manager');
+const { CloudflareTunnelManager, DatabaseTunnelSettingsStore } = require('./cloudflare-tunnel');
 
 const app = express();
 const DEPLOY_WEBHOOK_DUMMY_SECRET = crypto.randomBytes(32);
@@ -82,6 +83,10 @@ const performanceMonitor = new PerformanceMonitor({ db, manager, snapshotManager
 const edgeProxy = new EdgeProxy({ db, manager });
 const operationsManager = new OperationsManager({ db, manager, snapshotManager, edgeProxy });
 const updateManager = new UpdateManager({ db });
+const cloudflareTunnel = new CloudflareTunnelManager({
+  settingsStore: new DatabaseTunnelSettingsStore(db),
+  log: (level, message) => manager.log(null, level, message)
+});
 manager.setOperations(operationsManager);
 edgeProxy.setOperations(operationsManager);
 const publicDir = path.join(ROOT_DIR, 'public');
@@ -1851,8 +1856,12 @@ app.post('/api/admin/database-profiles', requireAuth, requireAdmin, (req, res) =
 app.delete('/api/admin/database-profiles/:id', requireAuth, requireAdmin, (req, res) => { try { operationsManager.deleteDatabaseProfile(Number(req.params.id)); recordAudit(req.user.id, 'database-profile.delete', { id: Number(req.params.id) }); res.status(204).end(); } catch (error) { res.status(400).json({ error: error.message }); } });
 
 app.get('/api/admin/operations', requireAuth, requireAdmin, (_req, res) => {
+  const operations = operationsManager.operationsPayload();
+  const tunnel = cloudflareTunnel.status();
   res.json({
-    ...operationsManager.operationsPayload(),
+    ...operations,
+    capabilities: { ...operations.capabilities, cloudflared: tunnel.available },
+    cloudflareTunnel: tunnel,
     settings: {
       prometheusEnabled: getSetting('prometheus_enabled', '0') === '1',
       prometheusTokenConfigured: Boolean(getSecretSetting(db, 'prometheus_token', '')),
@@ -1866,6 +1875,31 @@ app.get('/api/admin/operations', requireAuth, requireAdmin, (_req, res) => {
     },
     update: updateManager.status()
   });
+});
+
+app.put('/api/admin/cloudflare-tunnel', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+    const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
+    const configuration = { clearToken: bool(body.clearToken, false) };
+    if (has('enabled')) configuration.enabled = bool(body.enabled);
+    if (has('token')) configuration.token = String(body.token || '');
+    const result = await cloudflareTunnel.configure(configuration);
+    recordAudit(req.user.id, 'cloudflare-tunnel.configure', {
+      enabled: result.enabled,
+      tokenUpdated: Boolean(has('token') && String(body.token || '').trim()),
+      tokenCleared: bool(body.clearToken, false)
+    });
+    res.json({ cloudflareTunnel: result });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.post('/api/admin/cloudflare-tunnel/restart', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const result = await cloudflareTunnel.restart();
+    recordAudit(req.user.id, 'cloudflare-tunnel.restart');
+    res.json({ cloudflareTunnel: result });
+  } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
 app.put('/api/admin/operations/settings', requireAuth, requireAdmin, (req, res) => {
@@ -1998,6 +2032,11 @@ const dashboardServer = app.listen(DASHBOARD_PORT, DASHBOARD_HOST, async () => {
     await edgeProxy.start();
   } catch (error) {
     console.error(`Could not restore enabled sites during startup: ${error.message}`);
+  }
+  try {
+    await cloudflareTunnel.start();
+  } catch (error) {
+    console.error(`Could not start Cloudflare Tunnel: ${error.message}`);
   } finally {
     dashboardStartupSettled = true;
     resolveDashboardReady({ host: DASHBOARD_HOST, port: DASHBOARD_PORT });
@@ -2033,7 +2072,7 @@ async function shutdown(signal) {
   dashboardServer.closeIdleConnections?.();
 
   await stopIntegrationProcesses();
-  await Promise.allSettled([performanceMonitor.stop(), dependencyScanner.shutdown(), snapshotManager.shutdown(), operationsManager.shutdown(), updateManager.shutdown(), edgeProxy.stop()]);
+  await Promise.allSettled([performanceMonitor.stop(), dependencyScanner.shutdown(), snapshotManager.shutdown(), operationsManager.shutdown(), updateManager.shutdown(), cloudflareTunnel.shutdown(), edgeProxy.stop()]);
   await stopUploadWorkers();
   await pluginManager.shutdown();
   await manager.stopAll();

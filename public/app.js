@@ -2245,6 +2245,39 @@ function renderOperationsSite(payload) {
 function renderOperationsInstance(payload) {
   const settings = payload.settings || {};
   const backup = payload.backupSettings || {};
+  const tunnel = payload.cloudflareTunnel || {};
+  const tunnelState = {
+    disabled: ['Disabled', ''],
+    stopped: ['Stopped', ''],
+    'needs-token': ['Token required', 'warning'],
+    unavailable: ['Unavailable', 'error'],
+    starting: ['Connecting', 'warning'],
+    connected: ['Connected', 'success'],
+    backoff: ['Restarting', 'warning'],
+    error: ['Error', 'error']
+  }[tunnel.state] || ['Unknown', 'warning'];
+  $('#cloudflare-tunnel-status').textContent = tunnelState[0];
+  $('#cloudflare-tunnel-status').className = `badge ${tunnelState[1]}`.trim();
+  $('#cloudflare-tunnel-enabled').checked = Boolean(tunnel.enabled);
+  $('#cloudflare-tunnel-token').value = '';
+  $('#cloudflare-tunnel-token').disabled = false;
+  $('#clear-cloudflare-tunnel-token').checked = false;
+  $('#cloudflare-tunnel-token-status').textContent = tunnel.tokenConfigured
+    ? tunnel.tokenReadable === false ? 'A token is saved but cannot be decrypted. Replace or clear it.' : 'A tunnel token is currently saved.'
+    : 'No tunnel token is saved.';
+  $('#cloudflare-tunnel-token-status').dataset.configured = tunnel.tokenConfigured ? '1' : '0';
+  $('#cloudflare-tunnel-token-status').dataset.readable = tunnel.tokenReadable === false ? '0' : '1';
+  const tunnelDetails = [];
+  if (!tunnel.enabled) tunnelDetails.push('The connector is disabled.');
+  else if (!tunnel.available) tunnelDetails.push(`${tunnel.command || 'cloudflared'} is not installed or executable.`);
+  else if (tunnel.connected) tunnelDetails.push(`Connected${tunnel.connectedAt ? ` since ${formatDate(tunnel.connectedAt)}` : ''}${tunnel.pid ? ` · process ${tunnel.pid}` : ''}.`);
+  else if (tunnel.running) tunnelDetails.push(`Connector process is running${tunnel.startedAt ? ` since ${formatDate(tunnel.startedAt)}` : ''} and is waiting for an edge connection.`);
+  else tunnelDetails.push('The connector is not running.');
+  if (tunnel.restartCount) tunnelDetails.push(`${tunnel.restartCount} supervised restart${tunnel.restartCount === 1 ? '' : 's'} recorded.`);
+  if (tunnel.lastError) tunnelDetails.push(tunnel.lastError);
+  $('#cloudflare-tunnel-detail').textContent = tunnelDetails.join(' ');
+  $('#cloudflare-tunnel-detail').className = `notice span-2 ${['error', 'unavailable', 'backoff', 'needs-token'].includes(tunnel.state) ? 'warning' : ''}`.trim();
+  $('#restart-cloudflare-tunnel').disabled = !tunnel.enabled || !tunnel.tokenConfigured || !tunnel.available;
   $('#backup-provider').value = backup.provider || 'local';
   $('#backup-schedule').value = backup.schedule || '0 2 * * *';
   $('#backup-enabled').checked = Boolean(backup.enabled);
@@ -2286,6 +2319,7 @@ function renderOperationsInstance(payload) {
   const items = [
     ['Docker isolation', capabilities.docker, capabilities.dockerReason],
     ['Git releases', capabilities.git, capabilities.git ? '' : 'Git executable was not found.'],
+    ['Cloudflare Tunnel', capabilities.cloudflared, capabilities.cloudflared ? '' : 'The cloudflared executable was not found.'],
     ['Anubis', capabilities.anubis, capabilities.anubis ? '' : (capabilities.dockerReason || 'Anubis requires Docker isolation support.')],
     ['External backup', backup.configured, backup.configured ? '' : 'Configure and test an external backup destination.'],
     ['Public status', settings.publicStatusEnabled, settings.publicStatusEnabled ? '' : 'Public status is disabled.']
@@ -2491,6 +2525,41 @@ $('#search-runtime-logs').addEventListener('click', async (event) => {
     if ($('#log-since').value) params.set('since', new Date($('#log-since').value).toISOString());
     const result = await api(`/api/runtime-logs/search?${params}`);
     $('#operations-log-results').innerHTML = result.logs.length ? result.logs.map((log) => `<div class="event-item ${log.level === 'error' ? 'critical' : ''}"><div><strong>${escapeHtml(log.level)}</strong><span>${escapeHtml(formatDate(log.createdAt))}</span><small>${escapeHtml(log.message)}</small></div></div>`).join('') : '<p class="muted">No matching log records.</p>';
+  } catch (error) { toast(error.message, 'error'); }
+  finally { setBusy(event.currentTarget, false); }
+});
+
+$('#clear-cloudflare-tunnel-token').addEventListener('change', (event) => {
+  $('#cloudflare-tunnel-token').disabled = event.currentTarget.checked;
+  if (event.currentTarget.checked) $('#cloudflare-tunnel-token').value = '';
+});
+
+$('#cloudflare-tunnel-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = $('#cloudflare-tunnel-form button[type="submit"]');
+  setBusy(button, true, 'Saving…');
+  try {
+    const enabled = $('#cloudflare-tunnel-enabled').checked;
+    const clearToken = $('#clear-cloudflare-tunnel-token').checked;
+    const token = $('#cloudflare-tunnel-token').value.trim();
+    const tokenConfigured = $('#cloudflare-tunnel-token-status').dataset.configured === '1';
+    const tokenReadable = $('#cloudflare-tunnel-token-status').dataset.readable !== '0';
+    if (enabled && (clearToken || (!tokenConfigured && !token))) throw new Error('Set a tunnel token before enabling the connector.');
+    if (enabled && tokenConfigured && !tokenReadable && !token) throw new Error('Replace the unreadable tunnel token before enabling the connector.');
+    await api('/api/admin/cloudflare-tunnel', { method: 'PUT', body: { enabled, token: token || undefined, clearToken } });
+    $('#cloudflare-tunnel-token').value = '';
+    toast('Cloudflare Tunnel settings saved.');
+    await loadOperations();
+  } catch (error) { toast(error.message, 'error'); }
+  finally { setBusy(button, false); }
+});
+
+$('#restart-cloudflare-tunnel').addEventListener('click', async (event) => {
+  setBusy(event.currentTarget, true, 'Restarting…');
+  try {
+    await api('/api/admin/cloudflare-tunnel/restart', { method: 'POST' });
+    toast('Cloudflare Tunnel connector restarted.');
+    await loadOperations();
   } catch (error) { toast(error.message, 'error'); }
   finally { setBusy(event.currentTarget, false); }
 });

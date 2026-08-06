@@ -1,6 +1,9 @@
 ARG VERSION=1.0.0
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
+ARG CLOUDFLARED_VERSION=2026.7.3
+
+FROM cloudflare/cloudflared:${CLOUDFLARED_VERSION} AS cloudflared
 
 FROM node:22-bookworm-slim AS dependencies
 WORKDIR /app
@@ -34,6 +37,7 @@ RUN apt-get update \
     && setcap cap_net_bind_service=+ep "$(readlink -f "$(command -v python3)")" \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=dependencies /app/node_modules ./node_modules
+COPY --from=cloudflared /usr/local/bin/cloudflared /usr/local/bin/cloudflared
 COPY package.json ./
 COPY src ./src
 COPY public ./public

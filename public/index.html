@@ -272,6 +272,17 @@ exports.activate = ({ data, settings, log }) =&gt; ({
 
         <div id="operations-instance" class="operations-tab-panel" role="tabpanel" aria-labelledby="operations-tab-instance" hidden>
           <div id="setup-checklist" class="panel setup-checklist"></div>
+          <article class="panel">
+            <div class="panel-heading"><div><h2>Cloudflare Tunnel</h2><p class="muted">Run a remotely managed <code>cloudflared</code> connector without exposing the tunnel token in the process command line.</p></div><span id="cloudflare-tunnel-status" class="badge">Disabled</span></div>
+            <form id="cloudflare-tunnel-form" class="form-grid compact-grid">
+              <label class="checkbox-line"><input id="cloudflare-tunnel-enabled" type="checkbox"><span>Enable connector</span></label>
+              <label><span>New tunnel token</span><input id="cloudflare-tunnel-token" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved token"><small id="cloudflare-tunnel-token-status">No token is saved.</small></label>
+              <label class="checkbox-line span-2"><input id="clear-cloudflare-tunnel-token" type="checkbox"><span>Clear the saved tunnel token</span></label>
+              <div id="cloudflare-tunnel-detail" class="notice span-2" aria-live="polite">The connector is disabled.</div>
+              <div class="form-actions span-2"><button class="button primary" type="submit">Save tunnel settings</button><button id="restart-cloudflare-tunnel" class="button secondary" type="button">Restart connector</button></div>
+            </form>
+            <p class="muted">Configure public hostnames in Cloudflare Zero Trust. Inside the SHAM container, route hosted domains to <code>http://127.0.0.1:80</code> when the shared edge listener is enabled, or route the dashboard to <code>http://127.0.0.1:8080</code>.</p>
+          </article>
           <div class="operations-grid">
             <article class="panel"><div class="panel-heading"><div><h2>External backups</h2><p class="muted">Create encrypted restic backups or transfer archives to local, S3-compatible, or SFTP storage.</p></div><button id="run-backup" class="button primary" type="button">Run backup</button></div><form id="backup-form" class="form-grid compact-grid"><label><span>Provider</span><select id="backup-provider"><option value="local">Local filesystem</option><option value="restic">Restic</option><option value="s3">S3-compatible</option><option value="sftp">SFTP</option></select></label><label><span>Schedule</span><input id="backup-schedule" value="0 2 * * *"></label><label class="span-2"><span>Destination / repository</span><input id="backup-destination" autocomplete="off"></label><label><span>Retention count</span><input id="backup-retention" type="number" min="1" max="365" value="14"></label><label class="checkbox-line"><input id="backup-enabled" type="checkbox"><span>Enable scheduled backups</span></label><label class="span-2"><span>Provider options (JSON)</span><textarea id="backup-options" rows="5" spellcheck="false">{}</textarea><small id="backup-secret-status">Credentials entered here are encrypted and are never returned by the API.</small></label><div class="form-actions span-2"><button class="button primary" type="submit">Save backup settings</button></div></form><div id="backup-list" class="event-list"></div></article>
             <article class="panel">

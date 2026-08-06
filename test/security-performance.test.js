@@ -130,7 +130,7 @@ test('snapshot cleanup warnings propagate to the dashboard instead of turning su
 
 test('all security, service, worker, and browser code is included in the syntax-check command', () => {
   const packageJson = JSON.parse(read('package.json'));
-  for (const file of ['src/secret-store.js', 'src/mfa.js', 'src/webauthn.js', 'src/performance-monitor.js', 'src/dependency-scanner.js', 'src/snapshot-manager.js', 'src/edge-proxy.js', 'src/plugin-signing.js', 'src/plugin-sandbox-worker.js']) {
+  for (const file of ['src/secret-store.js', 'src/mfa.js', 'src/webauthn.js', 'src/performance-monitor.js', 'src/dependency-scanner.js', 'src/snapshot-manager.js', 'src/edge-proxy.js', 'src/cloudflare-tunnel.js', 'src/plugin-signing.js', 'src/plugin-sandbox-worker.js']) {
     assert.match(packageJson.scripts.check, new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
 });

@@ -20,6 +20,8 @@ services:
       # SHAM_JWT_SECRET: replace-with-at-least-32-random-characters
     volumes:
       - ./sham-data:/data
+    # Cloudflare Tunnel is outbound-only. When it is the exclusive ingress path,
+    # remove unneeded public mappings below or bind them to a private interface.
     ports:
       - "8080:8080"
       - "80:80"

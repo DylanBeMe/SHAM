@@ -16,7 +16,7 @@ It supports:
 - File browsing, text-document editing, single-file replacement, and single-file deletion.
 - Persistent request, bandwidth, error, response-time, visitor-IP, and country statistics with an Equal Earth country choropleth map.
 - Certbot certificate issuance and renewal.
-- Cloudflare DNS API integration for proxied A records and hostname-scoped firewall rules.
+- Cloudflare DNS/WAF integration plus an optional supervised Cloudflare Tunnel connector for outbound-only ingress.
 - Installable JSON and JavaScript plugins with settings and dashboard UI extensions.
 - Multi-user authentication with administrator and user roles, TOTP, recovery codes, and WebAuthn passkeys.
 - AES-256-GCM encryption for saved integration, plugin, and TOTP secrets, with administrator-triggered key rotation.
@@ -37,7 +37,7 @@ SHAM can execute uploaded Node.js applications and enabled JavaScript plugins. B
 
 Requirements:
 
-- Node.js 20 or newer.
+- Node.js 22 or newer.
 - npm.
 - A build environment supported by `better-sqlite3` when a prebuilt binary is unavailable.
 - Certbot only when using the built-in SSL features outside the supplied Docker image.
@@ -78,7 +78,7 @@ Or use Compose:
 docker compose up -d --build
 ```
 
-The Docker image includes Certbot and the Cloudflare DNS Certbot plugin. It grants only the Node and Python executables the low-port bind capability needed by sites on ports 80/443 and Certbot standalone validation, while the container itself runs as the unprivileged `node` user. The default persistent directory is `/data`.
+The Docker image includes Certbot, the Cloudflare DNS Certbot plugin, and the pinned multi-architecture `cloudflared` 2026.7.3 connector. It grants only the Node and Python executables the low-port bind capability needed by sites on ports 80/443 and Certbot standalone validation, while the container itself runs as the unprivileged `node` user. The default persistent directory is `/data`.
 
 All mutable instance data persists under `SHAM_DATA_PATH`. With the supplied Compose file, sites, configuration, secrets, plugins, certificates, releases, backups, and UI-staged SHAM application updates are stored in `./sham-data` on the host. SHAM 1.0.0 stores compatible application-code updates under `/data/app-runtime`, and the image bootstrap activates that persistent release after a container recreation. Keep the same volume mounted when recreating the container. Any SHAM update that changes runtime dependencies must be delivered through a reviewed image rebuild rather than the in-app code updater.
 
@@ -103,6 +103,14 @@ docker compose -f docker-compose.yml -f docker-compose.isolation.yml up -d --bui
 The administrator-only **Operations** workspace groups delivery, configuration, automation, backups, observability, and instance updates. Existing direct-upload sites remain compatible; every advanced feature is opt-in.
 
 On first administrator sign-in, SHAM presents a hardening checklist rather than silently assuming production readiness. Site configuration can be exported or imported as JSON without exporting secret values, and runtime logs support reusable saved filters.
+
+### Cloudflare Tunnel
+
+Under **Operations → Instance**, administrators can save a remotely managed Cloudflare Tunnel token, enable or disable the connector, inspect its local process state, and restart it. The token is encrypted with SHAM's master key and supplied through the `TUNNEL_TOKEN` environment variable, so it is not exposed in `cloudflared` command-line arguments. SHAM supervises unexpected exits with bounded exponential backoff and stops the connector during graceful shutdown.
+
+Create the tunnel and public-hostname routes in Cloudflare Zero Trust. Because `cloudflared` runs inside the SHAM container, a route for hosted domains should normally target `http://127.0.0.1:80` with the shared edge listener enabled; a dashboard-only route can target `http://127.0.0.1:8080`. Tunnel process status confirms only the local connector lifecycle. Verify route and replica health in Cloudflare as well.
+
+A tunnel does not require inbound port forwarding. When it is the exclusive ingress path, remove unnecessary Docker port publications or bind them only to a private interface, and block direct origin access. Existing published ports remain in the default Compose file for backward compatibility.
 
 ### Atomic releases, Git, webhooks, and previews
 
@@ -215,6 +223,7 @@ SHAM loads `.env` from the project root. Existing process environment variables 
 | `SHAM_EDGE_HOST` | `0.0.0.0` | Shared edge listener address. |
 | `SHAM_EDGE_HTTP_PORT` | `0` | Shared HTTP edge port; `0` disables it. |
 | `SHAM_EDGE_HTTPS_PORT` | `0` | Shared HTTPS/SNI edge port; `0` disables it. |
+| `SHAM_CLOUDFLARED_BIN` | `cloudflared` | Cloudflare Tunnel connector executable. The supplied Docker image includes a pinned binary. |
 | `SHAM_DOCKER_BIN` | `docker` | Docker executable used for isolated sites and Anubis sidecars. |
 | `SHAM_DOCKER_HOST_DATA_PATH` | unset | Absolute host path corresponding to `SHAM_DATA_PATH` when SHAM itself runs in Docker. |
 | `SHAM_DOCKER_INTERNAL_NETWORK` | `sham-internal` | Docker network used by isolated sites that must not have outbound internet access. The isolation overlay sets a shared internal network name. |
@@ -421,6 +430,8 @@ Then set a site domain and choose **Sync Cloudflare DNS**. SHAM creates or updat
 Changing a site domain marks its Cloudflare DNS state as unsynchronized. Sync the new hostname afterward. SHAM does not automatically delete the old external DNS record, because it may still be used elsewhere; remove it in Cloudflare when it is no longer needed.
 
 A proxied record routes supported traffic through Cloudflare only when the visitor-facing protocol and port are supported. Prefer a reverse proxy on ports 80/443 (or another currently supported Cloudflare proxy port) in front of SHAM sites. A proxied DNS record alone does not protect an origin that remains directly reachable, so restrict origin access to trusted networks or Cloudflare source ranges and expose only required ports. SHAM warns when a site's configured port is outside Cloudflare's standard proxy-port set.
+
+For outbound-only ingress, create a remotely managed tunnel in Cloudflare Zero Trust and paste its connector token under **Operations → Instance → Cloudflare Tunnel**. SHAM uses Cloudflare's `cloudflared tunnel --no-autoupdate run` lifecycle with the token supplied through `TUNNEL_TOKEN`. The DNS/WAF API token under **Instance** is separate from the tunnel connector token and should keep only the permissions needed for DNS, firewall, and Certbot workflows.
 
 ## Plugin system
 
@@ -732,6 +743,7 @@ sham/
 │   ├── db.js                SQLite schema and migrations
 │   ├── file-utils.js        File browser and editor operations
 │   ├── integrations.js      Cloudflare API and Certbot execution
+│   ├── cloudflare-tunnel.js  Supervised remotely managed tunnel connector
 │   ├── secret-store.js      Encrypted secret storage and rotation
 │   ├── mfa.js / webauthn.js TOTP, recovery codes, and passkeys
 │   ├── performance-monitor.js Live telemetry and alerts

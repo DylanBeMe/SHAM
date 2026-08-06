@@ -2,6 +2,12 @@
 
 All notable public changes to SHAM are documented here. The project follows Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+
+- Supervised remotely managed Cloudflare Tunnel support with encrypted token storage, administrator controls, bounded restart backoff, and Docker packaging.
+
 ## [1.0.0] — 2026-08-05
 
 First public stable release.
