@@ -1,8 +1,13 @@
-# SHAM — Simple Hosting And More
+<p align="center">
+  <img src="public/logo.svg" width="96" height="96" alt="SHAM logo">
+</p>
 
-**Current release: 1.0.0** · **License: AGPL-3.0-or-later**
+<h1 align="center">SHAM — Simple Hosting And More</h1>
 
-SHAM is a self-hosted control plane for deploying static websites and managed Node.js servers from one browser dashboard.
+<p align="center"><strong>A self-hosted control plane for static sites and managed Node.js apps.</strong></p>
+<p align="center"><strong>Current release: 1.0.0</strong> · <strong>License: AGPL-3.0-or-later</strong></p>
+
+SHAM keeps deployments, runtime controls, security, delivery, observability, and integrations in one browser dashboard while keeping application data on infrastructure you control.
 
 It supports:
 
@@ -16,7 +21,7 @@ It supports:
 - File browsing, text-document editing, single-file replacement, and single-file deletion.
 - Persistent request, bandwidth, error, response-time, visitor-IP, and country statistics with an Equal Earth country choropleth map.
 - Certbot certificate issuance and renewal.
-- Cloudflare DNS/WAF integration plus an optional supervised Cloudflare Tunnel connector for outbound-only ingress.
+- Cloudflare DNS/WAF integration plus independently configurable, supervised Cloudflare Tunnel connectors per site for outbound-only ingress.
 - Installable JSON and JavaScript plugins with settings and dashboard UI extensions.
 - Multi-user authentication with administrator and user roles, TOTP, recovery codes, and WebAuthn passkeys.
 - AES-256-GCM encryption for saved integration, plugin, and TOTP secrets, with administrator-triggered key rotation.
@@ -106,11 +111,15 @@ On first administrator sign-in, SHAM presents a hardening checklist rather than 
 
 ### Cloudflare Tunnel
 
-Under **Operations → Instance**, administrators can save a remotely managed Cloudflare Tunnel token, enable or disable the connector, inspect its local process state, and restart it. The token is encrypted with SHAM's master key and supplied through the `TUNNEL_TOKEN` environment variable, so it is not exposed in `cloudflared` command-line arguments. SHAM supervises unexpected exits with bounded exponential backoff and stops the connector during graceful shutdown.
+Cloudflare Tunnel is configured **per site**. Open **Sites → Site settings → Cloudflare Tunnel** as an administrator, paste the remotely managed tunnel token for that site, and enable the connector. **Operations → Instance** shows a compact overview of all site connectors and their current local state.
 
-Create the tunnel and public-hostname routes in Cloudflare Zero Trust. Because `cloudflared` runs inside the SHAM container, a route for hosted domains should normally target `http://127.0.0.1:80` with the shared edge listener enabled; a dashboard-only route can target `http://127.0.0.1:8080`. Tunnel process status confirms only the local connector lifecycle. Verify route and replica health in Cloudflare as well.
+Each site token is encrypted with SHAM's master key and supplied to its own `cloudflared tunnel --no-autoupdate run` process through the `TUNNEL_TOKEN` environment variable, so the secret is not exposed in process arguments or returned by the API. Connectors are supervised independently with bounded exponential backoff, can be restarted without disturbing other sites, and are stopped during graceful shutdown or site deletion.
 
-A tunnel does not require inbound port forwarding. When it is the exclusive ingress path, remove unnecessary Docker port publications or bind them only to a private interface, and block direct origin access. Existing published ports remain in the default Compose file for backward compatibility.
+Create the tunnel and public-hostname route in Cloudflare Zero Trust. For domain-routed traffic, the simplest layout is usually to enable SHAM's shared edge proxy and point the Cloudflare route at `http://127.0.0.1:80` inside the container. A tunnel can also target a site's directly reachable listener when that is intentional. Connector status confirms the local `cloudflared` lifecycle; verify hostname routing and replica health in Cloudflare as well.
+
+A tunnel does not require inbound port forwarding. When Cloudflare Tunnel is the exclusive ingress path, remove unnecessary Docker port publications or bind them only to a private interface, and block direct origin access. Existing published ports remain in the default Compose file for backward compatibility.
+
+> **Upgrading from the original instance-wide connector:** existing instance-level tunnel settings and API endpoints are retained for compatibility and continue to start automatically. New configuration should use the per-site controls; migrate the old tunnel intentionally before disabling the legacy connector so remote routes are not interrupted.
 
 ### Atomic releases, Git, webhooks, and previews
 
@@ -431,7 +440,7 @@ Changing a site domain marks its Cloudflare DNS state as unsynchronized. Sync th
 
 A proxied record routes supported traffic through Cloudflare only when the visitor-facing protocol and port are supported. Prefer a reverse proxy on ports 80/443 (or another currently supported Cloudflare proxy port) in front of SHAM sites. A proxied DNS record alone does not protect an origin that remains directly reachable, so restrict origin access to trusted networks or Cloudflare source ranges and expose only required ports. SHAM warns when a site's configured port is outside Cloudflare's standard proxy-port set.
 
-For outbound-only ingress, create a remotely managed tunnel in Cloudflare Zero Trust and paste its connector token under **Operations → Instance → Cloudflare Tunnel**. SHAM uses Cloudflare's `cloudflared tunnel --no-autoupdate run` lifecycle with the token supplied through `TUNNEL_TOKEN`. The DNS/WAF API token under **Instance** is separate from the tunnel connector token and should keep only the permissions needed for DNS, firewall, and Certbot workflows.
+For outbound-only ingress, create a remotely managed tunnel in Cloudflare Zero Trust and paste its connector token under **Sites → Site settings → Cloudflare Tunnel**. Each site gets an independent `cloudflared tunnel --no-autoupdate run` lifecycle with the token supplied through `TUNNEL_TOKEN`. The DNS/WAF API token under **Instance** is separate from site tunnel connector tokens and should keep only the permissions needed for DNS, firewall, and Certbot workflows.
 
 ## Plugin system
 
@@ -743,7 +752,7 @@ sham/
 │   ├── db.js                SQLite schema and migrations
 │   ├── file-utils.js        File browser and editor operations
 │   ├── integrations.js      Cloudflare API and Certbot execution
-│   ├── cloudflare-tunnel.js  Supervised remotely managed tunnel connector
+│   ├── cloudflare-tunnel.js  Supervised per-site and legacy tunnel connectors
 │   ├── secret-store.js      Encrypted secret storage and rotation
 │   ├── mfa.js / webauthn.js TOTP, recovery codes, and passkeys
 │   ├── performance-monitor.js Live telemetry and alerts

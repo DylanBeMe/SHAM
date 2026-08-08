@@ -71,7 +71,7 @@ const { EdgeProxy } = require('./edge-proxy');
 const { validatePluginArchiveFile } = require('./plugin-archive');
 const { OperationsManager } = require('./operations-manager');
 const { UpdateManager } = require('./update-manager');
-const { CloudflareTunnelManager, DatabaseTunnelSettingsStore } = require('./cloudflare-tunnel');
+const { CloudflareTunnelManager, DatabaseTunnelSettingsStore, SiteCloudflareTunnelRegistry } = require('./cloudflare-tunnel');
 
 const app = express();
 const DEPLOY_WEBHOOK_DUMMY_SECRET = crypto.randomBytes(32);
@@ -83,9 +83,13 @@ const performanceMonitor = new PerformanceMonitor({ db, manager, snapshotManager
 const edgeProxy = new EdgeProxy({ db, manager });
 const operationsManager = new OperationsManager({ db, manager, snapshotManager, edgeProxy });
 const updateManager = new UpdateManager({ db });
-const cloudflareTunnel = new CloudflareTunnelManager({
+const cloudflareTunnels = new SiteCloudflareTunnelRegistry({
+  db,
+  log: (siteId, level, message) => manager.log(siteId, level, message)
+});
+const legacyCloudflareTunnel = new CloudflareTunnelManager({
   settingsStore: new DatabaseTunnelSettingsStore(db),
-  log: (level, message) => manager.log(null, level, message)
+  log: (level, message) => manager.log(null, level, `[Legacy tunnel] ${message}`)
 });
 manager.setOperations(operationsManager);
 edgeProxy.setOperations(operationsManager);
@@ -739,7 +743,7 @@ app.delete('/api/security/passkeys/:id', requireAuth, async (req, res) => {
 
 app.use(['/api/sites/:id', '/api/admin/sites/:id'], requireAuth, serializeSiteMutation);
 
-app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows() }));
+app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().map((site) => ({ ...site, cloudflareTunnel: cloudflareTunnels.summary(site.id) })) }));
 
 app.get('/api/statistics', requireAuth, (_req, res) => {
   try { manager.flushStats(); } catch (error) { manager.log(null, 'error', `Could not flush statistics before reading them: ${error.message}`); }
@@ -1200,11 +1204,13 @@ app.delete('/api/sites/:id', requireAuth, async (req, res) => {
   const site = getSiteOr404(req, res);
   if (!site) return;
   const wasRunning = manager.statusFor(site.id).running;
+  const tunnelWasEnabled = cloudflareTunnels.status(site.id).enabled;
   const root = path.join(SITES_DIR, site.directory_name);
   const trash = `${root}.delete-${crypto.randomUUID()}`;
   let filesStaged = false;
   try {
     await manager.stop(site.id);
+    await cloudflareTunnels.stop(site.id);
     manager.flushStats();
     manager.flushRuntimeLogs();
     try {
@@ -1230,6 +1236,10 @@ app.delete('/api/sites/:id', requireAuth, async (req, res) => {
     if (wasRunning && !manager.statusFor(site.id).running && manager.getSite(site.id)) {
       try { await manager.start(site); }
       catch (restoreError) { manager.log(site.id, 'error', `Could not restore site runtime after a failed deletion: ${restoreError.message}`); }
+    }
+    if (tunnelWasEnabled && manager.getSite(site.id)) {
+      try { await cloudflareTunnels.start(site.id); }
+      catch (restoreError) { manager.log(site.id, 'error', `Could not restore the site's Cloudflare Tunnel after a failed deletion: ${restoreError.message}`); }
     }
     res.status(500).json({ error: error.message });
   }
@@ -1857,11 +1867,11 @@ app.delete('/api/admin/database-profiles/:id', requireAuth, requireAdmin, (req, 
 
 app.get('/api/admin/operations', requireAuth, requireAdmin, (_req, res) => {
   const operations = operationsManager.operationsPayload();
-  const tunnel = cloudflareTunnel.status();
   res.json({
     ...operations,
-    capabilities: { ...operations.capabilities, cloudflared: tunnel.available },
-    cloudflareTunnel: tunnel,
+    capabilities: { ...operations.capabilities, cloudflared: cloudflareTunnels.available() || legacyCloudflareTunnel.status().available },
+    siteCloudflareTunnels: cloudflareTunnels.listStatus(),
+    cloudflareTunnel: legacyCloudflareTunnel.status(),
     settings: {
       prometheusEnabled: getSetting('prometheus_enabled', '0') === '1',
       prometheusTokenConfigured: Boolean(getSecretSetting(db, 'prometheus_token', '')),
@@ -1884,8 +1894,38 @@ app.put('/api/admin/cloudflare-tunnel', requireAuth, requireAdmin, async (req, r
     const configuration = { clearToken: bool(body.clearToken, false) };
     if (has('enabled')) configuration.enabled = bool(body.enabled);
     if (has('token')) configuration.token = String(body.token || '');
-    const result = await cloudflareTunnel.configure(configuration);
-    recordAudit(req.user.id, 'cloudflare-tunnel.configure', {
+    const result = await legacyCloudflareTunnel.configure(configuration);
+    recordAudit(req.user.id, 'cloudflare-tunnel.configure', { enabled: result.enabled, tokenUpdated: Boolean(has('token') && String(body.token || '').trim()), tokenCleared: bool(body.clearToken, false) });
+    res.json({ cloudflareTunnel: result });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.post('/api/admin/cloudflare-tunnel/restart', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const result = await legacyCloudflareTunnel.restart();
+    recordAudit(req.user.id, 'cloudflare-tunnel.restart');
+    res.json({ cloudflareTunnel: result });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.get('/api/admin/sites/:id/cloudflare-tunnel', requireAuth, requireAdmin, (req, res) => {
+  const site = getSiteOr404(req, res);
+  if (!site) return;
+  res.json({ cloudflareTunnel: cloudflareTunnels.status(site.id) });
+});
+
+app.put('/api/admin/sites/:id/cloudflare-tunnel', requireAuth, requireAdmin, async (req, res) => {
+  const site = getSiteOr404(req, res);
+  if (!site) return;
+  try {
+    const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+    const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
+    const configuration = { clearToken: bool(body.clearToken, false) };
+    if (has('enabled')) configuration.enabled = bool(body.enabled);
+    if (has('token')) configuration.token = String(body.token || '');
+    const result = await cloudflareTunnels.configure(site.id, configuration);
+    recordAudit(req.user.id, 'site.cloudflare-tunnel.configure', {
+      siteId: site.id,
       enabled: result.enabled,
       tokenUpdated: Boolean(has('token') && String(body.token || '').trim()),
       tokenCleared: bool(body.clearToken, false)
@@ -1894,10 +1934,12 @@ app.put('/api/admin/cloudflare-tunnel', requireAuth, requireAdmin, async (req, r
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
-app.post('/api/admin/cloudflare-tunnel/restart', requireAuth, requireAdmin, async (req, res) => {
+app.post('/api/admin/sites/:id/cloudflare-tunnel/restart', requireAuth, requireAdmin, async (req, res) => {
+  const site = getSiteOr404(req, res);
+  if (!site) return;
   try {
-    const result = await cloudflareTunnel.restart();
-    recordAudit(req.user.id, 'cloudflare-tunnel.restart');
+    const result = await cloudflareTunnels.restart(site.id);
+    recordAudit(req.user.id, 'site.cloudflare-tunnel.restart', { siteId: site.id });
     res.json({ cloudflareTunnel: result });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
@@ -2034,9 +2076,9 @@ const dashboardServer = app.listen(DASHBOARD_PORT, DASHBOARD_HOST, async () => {
     console.error(`Could not restore enabled sites during startup: ${error.message}`);
   }
   try {
-    await cloudflareTunnel.start();
+    await Promise.all([cloudflareTunnels.startEnabled(), legacyCloudflareTunnel.start()]);
   } catch (error) {
-    console.error(`Could not start Cloudflare Tunnel: ${error.message}`);
+    console.error(`Could not start configured Cloudflare Tunnels: ${error.message}`);
   } finally {
     dashboardStartupSettled = true;
     resolveDashboardReady({ host: DASHBOARD_HOST, port: DASHBOARD_PORT });
@@ -2072,7 +2114,7 @@ async function shutdown(signal) {
   dashboardServer.closeIdleConnections?.();
 
   await stopIntegrationProcesses();
-  await Promise.allSettled([performanceMonitor.stop(), dependencyScanner.shutdown(), snapshotManager.shutdown(), operationsManager.shutdown(), updateManager.shutdown(), cloudflareTunnel.shutdown(), edgeProxy.stop()]);
+  await Promise.allSettled([performanceMonitor.stop(), dependencyScanner.shutdown(), snapshotManager.shutdown(), operationsManager.shutdown(), updateManager.shutdown(), cloudflareTunnels.shutdown(), legacyCloudflareTunnel.shutdown(), edgeProxy.stop()]);
   await stopUploadWorkers();
   await pluginManager.shutdown();
   await manager.stopAll();

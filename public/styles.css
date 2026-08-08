@@ -794,3 +794,23 @@ input[type="range"] { padding: .55rem 0; }
   .config-row > .icon-button { justify-self: stretch; width: 100%; }
   .inline-upload > * { width: 100%; }
 }
+
+/* Brand + connector polish */
+.brand-mark { object-fit: cover; flex: 0 0 auto; }
+.brand-mark.small { object-fit: cover; }
+.site-card { transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+.site-card:hover { transform: translateY(-2px); border-color: var(--line-strong); box-shadow: 0 20px 48px rgba(3, 1, 8, .28); }
+.panel { background: linear-gradient(155deg, color-mix(in srgb, var(--panel) 96%, var(--primary) 4%), var(--panel)); }
+.tunnel-overview { overflow: hidden; position: relative; }
+.tunnel-overview::after { content: ""; position: absolute; width: 220px; height: 220px; right: -110px; top: -130px; border-radius: 50%; background: color-mix(in srgb, var(--primary) 10%, transparent); pointer-events: none; }
+.connector-list { display: grid; gap: .65rem; margin-bottom: 1rem; }
+.connector-row { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .8rem; padding: .8rem .9rem; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-subtle); }
+.connector-row > div:nth-child(2) { min-width: 0; display: grid; gap: .15rem; }
+.connector-row strong, .connector-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.connector-row span:not(.badge) { color: var(--muted); font-size: .75rem; }
+.connector-mark { width: 2rem; height: 2rem; display: grid; place-items: center; border-radius: 9px; background: var(--primary-soft); color: var(--primary); font-weight: 900; }
+.empty-connector { padding: 1.15rem; border: 1px dashed var(--line-strong); border-radius: 13px; display: grid; gap: .25rem; text-align: center; }
+.empty-connector span { color: var(--muted); font-size: .78rem; }
+.tunnel-status-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .9rem 1rem; border: 1px solid var(--line); border-radius: 13px; background: linear-gradient(135deg, var(--primary-soft), var(--surface-subtle)); }
+.tunnel-status-card > div { display: grid; gap: .15rem; }
+.tunnel-status-card strong { font-size: 1rem; }

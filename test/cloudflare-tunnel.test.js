@@ -1,13 +1,17 @@
 'use strict';
 
 process.env.SHAM_JWT_SECRET = 'cloudflare-tunnel-test-secret-at-least-32-characters';
+process.env.SHAM_MASTER_KEY = '11'.repeat(32);
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   CloudflareTunnelManager,
+  SiteCloudflareTunnelRegistry,
   validateToken
 } = require('../src/cloudflare-tunnel');
 
@@ -190,4 +194,55 @@ test('capability status refreshes when cloudflared becomes available', async () 
   assert.equal(manager.status().available, false);
   options.available = true;
   assert.equal(manager.status().available, true);
+});
+
+test('site tunnel persistence is site scoped and encrypted at rest', () => {
+  const tunnelSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'cloudflare-tunnel.js'), 'utf8');
+  const dbSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'db.js'), 'utf8');
+  assert.match(dbSource, /CREATE TABLE IF NOT EXISTS site_cloudflare_tunnels/);
+  assert.match(dbSource, /FOREIGN KEY \(site_id\) REFERENCES sites\(id\) ON DELETE CASCADE/);
+  assert.match(tunnelSource, /new DatabaseTunnelSettingsStore\(this\.db, id\)/);
+  assert.match(tunnelSource, /const storedToken = token !== undefined \? encrypt\(token\)/);
+  assert.match(tunnelSource, /return decrypt\(stored, ''\)/);
+});
+
+test('site tunnel registry supervises connectors independently', async () => {
+  const spawns = [];
+  const children = [];
+  const stores = new Map([[1, new FakeSettingsStore()], [2, new FakeSettingsStore()]]);
+  const registry = new SiteCloudflareTunnelRegistry({
+    db: {},
+    managerFactory: (options, siteId) => new CloudflareTunnelManager({ ...options, settingsStore: stores.get(siteId) }),
+    managerOptions: {
+      command: '/usr/local/bin/cloudflared',
+      commandAvailableCheck: () => true,
+      spawnProcess: (command, args, options) => {
+        const child = new FakeChild(2200 + children.length);
+        children.push(child);
+        spawns.push({ command, args, options });
+        return child;
+      },
+      terminateProcess: async (child) => {
+        if (child.exitCode === null && child.signalCode === null) child.exit(0, 'SIGTERM');
+      },
+      environment: (extra) => ({ PATH: '/usr/local/bin', ...extra }),
+      restartBaseMs: 100,
+      restartMaxMs: 200,
+      stableAfterMs: 100
+    }
+  });
+
+  await registry.configure(1, { enabled: true, token: 'alpha-token' });
+  await registry.configure(2, { enabled: true, token: 'beta-token' });
+  assert.equal(spawns.length, 2);
+  assert.equal(spawns[0].options.env.TUNNEL_TOKEN, 'alpha-token');
+  assert.equal(spawns[1].options.env.TUNNEL_TOKEN, 'beta-token');
+  assert.equal(registry.status(1).running, true);
+  assert.equal(registry.status(2).running, true);
+
+  await registry.configure(1, { enabled: false });
+  assert.equal(registry.status(1).state, 'disabled');
+  assert.equal(registry.status(1).running, false);
+  assert.equal(registry.status(2).running, true);
+  await registry.shutdown();
 });

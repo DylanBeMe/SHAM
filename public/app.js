@@ -737,7 +737,7 @@ function renderSites() {
         <div class="meta-cell"><span>Runtime</span><strong>${site.runtime_type === 'node' ? 'Node.js' : 'Static'}${site.minify ? ' · Minified' : ''}${site.obfuscate ? ' · Obfuscated' : ''}</strong></div>
         <div class="meta-cell"><span>Listener</span><strong>${escapeHtml(site.bind_host)}:${site.port}</strong></div>
         <div class="meta-cell"><span>Entry</span><strong>${escapeHtml(site.runtime_type === 'node' ? site.node_entry : site.entry_file)}</strong></div>
-        <div class="meta-cell"><span>Protection</span><strong>${site.domain_only ? 'Domain only · ' : ''}${site.firewall_enabled ? `${escapeHtml(site.firewall?.mode || 'local')} firewall · ` : ''}${site.cloudflare_enabled ? 'Cloudflare · ' : ''}${site.ssl_enabled ? 'SSL' : protocol.toUpperCase()}</strong></div>
+        <div class="meta-cell"><span>Protection</span><strong>${site.domain_only ? 'Domain only · ' : ''}${site.firewall_enabled ? `${escapeHtml(site.firewall?.mode || 'local')} firewall · ` : ''}${site.cloudflareTunnel?.enabled ? `Tunnel ${site.cloudflareTunnel.connected ? 'online' : 'enabled'} · ` : ''}${site.cloudflare_enabled ? 'Cloudflare DNS · ' : ''}${site.ssl_enabled ? 'SSL' : protocol.toUpperCase()}</strong></div>
       </div>
       ${site.runtime.error ? `<p class="site-error">${escapeHtml(site.runtime.error)}</p>` : ''}
       <div class="site-actions">
@@ -1045,6 +1045,8 @@ function openNewSite() {
   $('#site-cache-rules').value = '[]';
   $('#isolation-options').open = false;
   $('#delivery-options').open = false;
+  $('#site-cloudflare-tunnel-options').hidden = true;
+  $('#site-cloudflare-tunnel-options').open = false;
   $('#site-form-error').textContent = '';
   clearUpload('site');
   updateRuntimeFields();
@@ -1147,6 +1149,11 @@ function openEditSite(site) {
   updateFirewallFields();
   updateObfuscationFields();
   updateIsolationFields();
+  $('#site-cloudflare-tunnel-options').hidden = state.user?.role !== 'admin';
+  if (state.user?.role === 'admin') {
+    renderSiteCloudflareTunnel(site.cloudflareTunnel || {});
+    loadSiteCloudflareTunnel(site.id).catch((error) => { $('#site-cloudflare-tunnel-detail').textContent = error.message; });
+  }
   showModal($('#site-dialog'));
 }
 
@@ -2242,11 +2249,8 @@ function renderOperationsSite(payload) {
   $('#job-list').dataset.jobs = JSON.stringify(payload.jobs || []);
 }
 
-function renderOperationsInstance(payload) {
-  const settings = payload.settings || {};
-  const backup = payload.backupSettings || {};
-  const tunnel = payload.cloudflareTunnel || {};
-  const tunnelState = {
+function tunnelStatePresentation(tunnel = {}) {
+  return {
     disabled: ['Disabled', ''],
     stopped: ['Stopped', ''],
     'needs-token': ['Token required', 'warning'],
@@ -2256,28 +2260,63 @@ function renderOperationsInstance(payload) {
     backoff: ['Restarting', 'warning'],
     error: ['Error', 'error']
   }[tunnel.state] || ['Unknown', 'warning'];
-  $('#cloudflare-tunnel-status').textContent = tunnelState[0];
-  $('#cloudflare-tunnel-status').className = `badge ${tunnelState[1]}`.trim();
-  $('#cloudflare-tunnel-enabled').checked = Boolean(tunnel.enabled);
-  $('#cloudflare-tunnel-token').value = '';
-  $('#cloudflare-tunnel-token').disabled = false;
-  $('#clear-cloudflare-tunnel-token').checked = false;
-  $('#cloudflare-tunnel-token-status').textContent = tunnel.tokenConfigured
-    ? tunnel.tokenReadable === false ? 'A token is saved but cannot be decrypted. Replace or clear it.' : 'A tunnel token is currently saved.'
-    : 'No tunnel token is saved.';
-  $('#cloudflare-tunnel-token-status').dataset.configured = tunnel.tokenConfigured ? '1' : '0';
-  $('#cloudflare-tunnel-token-status').dataset.readable = tunnel.tokenReadable === false ? '0' : '1';
-  const tunnelDetails = [];
-  if (!tunnel.enabled) tunnelDetails.push('The connector is disabled.');
-  else if (!tunnel.available) tunnelDetails.push(`${tunnel.command || 'cloudflared'} is not installed or executable.`);
-  else if (tunnel.connected) tunnelDetails.push(`Connected${tunnel.connectedAt ? ` since ${formatDate(tunnel.connectedAt)}` : ''}${tunnel.pid ? ` · process ${tunnel.pid}` : ''}.`);
-  else if (tunnel.running) tunnelDetails.push(`Connector process is running${tunnel.startedAt ? ` since ${formatDate(tunnel.startedAt)}` : ''} and is waiting for an edge connection.`);
-  else tunnelDetails.push('The connector is not running.');
-  if (tunnel.restartCount) tunnelDetails.push(`${tunnel.restartCount} supervised restart${tunnel.restartCount === 1 ? '' : 's'} recorded.`);
-  if (tunnel.lastError) tunnelDetails.push(tunnel.lastError);
-  $('#cloudflare-tunnel-detail').textContent = tunnelDetails.join(' ');
-  $('#cloudflare-tunnel-detail').className = `notice span-2 ${['error', 'unavailable', 'backoff', 'needs-token'].includes(tunnel.state) ? 'warning' : ''}`.trim();
-  $('#restart-cloudflare-tunnel').disabled = !tunnel.enabled || !tunnel.tokenConfigured || !tunnel.available;
+}
+
+function tunnelDetail(tunnel = {}) {
+  const details = [];
+  if (!tunnel.enabled) details.push('The connector is disabled.');
+  else if (!tunnel.available) details.push('cloudflared is not installed or executable.');
+  else if (tunnel.connected) details.push(`Connected${tunnel.connectedAt ? ` since ${formatDate(tunnel.connectedAt)}` : ''}.`);
+  else if (tunnel.running) details.push('The connector process is running and waiting for an edge connection.');
+  else details.push('The connector is not running.');
+  if (tunnel.restartCount) details.push(`${tunnel.restartCount} supervised restart${tunnel.restartCount === 1 ? '' : 's'} recorded.`);
+  if (tunnel.lastError) details.push(tunnel.lastError);
+  return details.join(' ');
+}
+
+function renderSiteCloudflareTunnel(tunnel = {}) {
+  const [label, badgeClass] = tunnelStatePresentation(tunnel);
+  $('#site-cloudflare-tunnel-title').textContent = label;
+  $('#site-cloudflare-tunnel-status').textContent = label;
+  $('#site-cloudflare-tunnel-status').className = `badge ${badgeClass}`.trim();
+  $('#site-cloudflare-tunnel-enabled').checked = Boolean(tunnel.enabled);
+  $('#site-cloudflare-tunnel-token').value = '';
+  $('#site-cloudflare-tunnel-token').disabled = false;
+  $('#site-clear-cloudflare-tunnel-token').checked = false;
+  $('#site-cloudflare-tunnel-token-status').textContent = tunnel.tokenConfigured
+    ? tunnel.tokenReadable === false ? 'A token is saved but cannot be decrypted. Replace or clear it.' : 'A tunnel token is saved for this site.'
+    : 'No tunnel token is saved for this site.';
+  $('#site-cloudflare-tunnel-token-status').dataset.configured = tunnel.tokenConfigured ? '1' : '0';
+  $('#site-cloudflare-tunnel-token-status').dataset.readable = tunnel.tokenReadable === false ? '0' : '1';
+  $('#site-cloudflare-tunnel-detail').textContent = tunnelDetail(tunnel);
+  $('#site-cloudflare-tunnel-detail').className = `notice span-2 ${['error', 'unavailable', 'backoff', 'needs-token'].includes(tunnel.state) ? 'warning' : ''}`.trim();
+  $('#restart-site-cloudflare-tunnel').disabled = !tunnel.enabled || !tunnel.tokenConfigured || !tunnel.available;
+}
+
+async function loadSiteCloudflareTunnel(siteId) {
+  if (state.user?.role !== 'admin' || !siteId) return;
+  const result = await api(`/api/admin/sites/${siteId}/cloudflare-tunnel`);
+  renderSiteCloudflareTunnel(result.cloudflareTunnel || {});
+}
+
+function renderOperationsInstance(payload) {
+  const settings = payload.settings || {};
+  const backup = payload.backupSettings || {};
+  const tunnels = payload.siteCloudflareTunnels || [];
+  const legacy = payload.cloudflareTunnel || {};
+  const connectors = [...tunnels];
+  if (legacy.enabled || legacy.tokenConfigured) connectors.push({ ...legacy, name: 'Instance connector', domain: 'Legacy configuration', legacy: true });
+  const activeTunnels = connectors.filter((tunnel) => tunnel.enabled);
+  const connectedTunnels = connectors.filter((tunnel) => tunnel.connected);
+  $('#cloudflare-tunnel-status').textContent = activeTunnels.length ? `${connectedTunnels.length}/${activeTunnels.length} connected` : 'No active tunnels';
+  $('#cloudflare-tunnel-status').className = `badge ${activeTunnels.length && connectedTunnels.length === activeTunnels.length ? 'success' : activeTunnels.length ? 'warning' : ''}`.trim();
+  $('#cloudflare-tunnel-list').innerHTML = connectors.length
+    ? connectors.map((tunnel) => {
+      const [label, badgeClass] = tunnelStatePresentation(tunnel);
+      const target = tunnel.legacy ? 'Legacy instance-wide connector' : (tunnel.domain || 'No domain configured');
+      return `<div class="connector-row"><div class="connector-mark">⇄</div><div><strong>${escapeHtml(tunnel.name)}</strong><span>${escapeHtml(target)}</span></div><span class="badge ${badgeClass}">${escapeHtml(label)}</span></div>`;
+    }).join('')
+    : '<div class="empty-connector"><strong>No connectors configured</strong><span>Edit a site to configure its Cloudflare Tunnel.</span></div>';
   $('#backup-provider').value = backup.provider || 'local';
   $('#backup-schedule').value = backup.schedule || '0 2 * * *';
   $('#backup-enabled').checked = Boolean(backup.enabled);
@@ -2529,37 +2568,41 @@ $('#search-runtime-logs').addEventListener('click', async (event) => {
   finally { setBusy(event.currentTarget, false); }
 });
 
-$('#clear-cloudflare-tunnel-token').addEventListener('change', (event) => {
-  $('#cloudflare-tunnel-token').disabled = event.currentTarget.checked;
-  if (event.currentTarget.checked) $('#cloudflare-tunnel-token').value = '';
+
+$('#site-clear-cloudflare-tunnel-token').addEventListener('change', (event) => {
+  $('#site-cloudflare-tunnel-token').disabled = event.currentTarget.checked;
+  if (event.currentTarget.checked) $('#site-cloudflare-tunnel-token').value = '';
 });
 
-$('#cloudflare-tunnel-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const button = $('#cloudflare-tunnel-form button[type="submit"]');
-  setBusy(button, true, 'Saving…');
+$('#save-site-cloudflare-tunnel').addEventListener('click', async (event) => {
+  const siteId = Number($('#site-id').value);
+  if (!siteId) return;
+  setBusy(event.currentTarget, true, 'Saving…');
   try {
-    const enabled = $('#cloudflare-tunnel-enabled').checked;
-    const clearToken = $('#clear-cloudflare-tunnel-token').checked;
-    const token = $('#cloudflare-tunnel-token').value.trim();
-    const tokenConfigured = $('#cloudflare-tunnel-token-status').dataset.configured === '1';
-    const tokenReadable = $('#cloudflare-tunnel-token-status').dataset.readable !== '0';
-    if (enabled && (clearToken || (!tokenConfigured && !token))) throw new Error('Set a tunnel token before enabling the connector.');
-    if (enabled && tokenConfigured && !tokenReadable && !token) throw new Error('Replace the unreadable tunnel token before enabling the connector.');
-    await api('/api/admin/cloudflare-tunnel', { method: 'PUT', body: { enabled, token: token || undefined, clearToken } });
-    $('#cloudflare-tunnel-token').value = '';
-    toast('Cloudflare Tunnel settings saved.');
-    await loadOperations();
+    const enabled = $('#site-cloudflare-tunnel-enabled').checked;
+    const clearToken = $('#site-clear-cloudflare-tunnel-token').checked;
+    const token = $('#site-cloudflare-tunnel-token').value.trim();
+    const tokenConfigured = $('#site-cloudflare-tunnel-token-status').dataset.configured === '1';
+    const tokenReadable = $('#site-cloudflare-tunnel-token-status').dataset.readable !== '0';
+    if (enabled && (clearToken || (!tokenConfigured && !token))) throw new Error('Set a tunnel token before enabling this connector.');
+    if (enabled && tokenConfigured && !tokenReadable && !token) throw new Error('Replace the unreadable tunnel token before enabling this connector.');
+    const result = await api(`/api/admin/sites/${siteId}/cloudflare-tunnel`, { method: 'PUT', body: { enabled, token: token || undefined, clearToken } });
+    renderSiteCloudflareTunnel(result.cloudflareTunnel || {});
+    toast('Site tunnel settings saved.');
+    await loadSites();
   } catch (error) { toast(error.message, 'error'); }
-  finally { setBusy(button, false); }
+  finally { setBusy(event.currentTarget, false); }
 });
 
-$('#restart-cloudflare-tunnel').addEventListener('click', async (event) => {
+$('#restart-site-cloudflare-tunnel').addEventListener('click', async (event) => {
+  const siteId = Number($('#site-id').value);
+  if (!siteId) return;
   setBusy(event.currentTarget, true, 'Restarting…');
   try {
-    await api('/api/admin/cloudflare-tunnel/restart', { method: 'POST' });
-    toast('Cloudflare Tunnel connector restarted.');
-    await loadOperations();
+    const result = await api(`/api/admin/sites/${siteId}/cloudflare-tunnel/restart`, { method: 'POST' });
+    renderSiteCloudflareTunnel(result.cloudflareTunnel || {});
+    toast('Site tunnel connector restarted.');
+    await loadSites();
   } catch (error) { toast(error.message, 'error'); }
   finally { setBusy(event.currentTarget, false); }
 });

@@ -5,13 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0c0717">
   <title>SHAM — Simple Hosting And More</title>
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
   <script src="theme-init.js"></script>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body class="auth-active">
   <div id="auth-view" class="auth-layout">
     <section class="auth-brand">
-      <div class="brand-lockup"><div class="brand-mark">S</div><div><strong>SHAM</strong><span>Simple Hosting And More</span></div></div>
+      <div class="brand-lockup"><img class="brand-mark" src="logo.svg" alt="SHAM"><div><strong>SHAM</strong><span>Simple Hosting And More</span></div></div>
       <div class="auth-pitch">
         <p class="eyebrow">Your server, simplified</p>
         <h1>Host static sites and real Node.js apps from one private console.</h1>
@@ -43,7 +44,7 @@
 
   <div id="dashboard-view" class="app-shell" hidden>
     <aside id="sidebar" class="sidebar">
-      <div class="sidebar-brand"><div class="brand-mark small">S</div><div><strong>SHAM</strong><span>Hosting console</span></div></div>
+      <div class="sidebar-brand"><img class="brand-mark small" src="logo.svg" alt=""><div><strong>SHAM</strong><span>Hosting console</span></div></div>
       <nav class="nav-list" aria-label="Dashboard">
         <button class="nav-item active" data-section="overview" type="button" aria-current="page"><span>⌂</span>Overview</button>
         <button class="nav-item" data-section="sites" type="button"><span>◫</span>Sites</button>
@@ -65,7 +66,7 @@
     <button id="sidebar-backdrop" class="sidebar-backdrop" type="button" aria-label="Close navigation" tabindex="-1"></button>
 
     <main class="workspace">
-      <header class="mobile-header"><div class="sidebar-brand"><div class="brand-mark small">S</div><strong>SHAM</strong></div><button id="mobile-menu" class="icon-button" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button></header>
+      <header class="mobile-header"><div class="sidebar-brand"><img class="brand-mark small" src="logo.svg" alt=""><strong>SHAM</strong></div><button id="mobile-menu" class="icon-button" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button></header>
 
       <section id="section-overview" class="view-section">
         <header class="page-header"><div><p class="eyebrow">Live instance</p><h1>Overview</h1><p class="muted">Traffic and health across every loaded site.</p></div><button id="refresh-overview" class="button secondary" type="button">Refresh</button></header>
@@ -272,16 +273,10 @@ exports.activate = ({ data, settings, log }) =&gt; ({
 
         <div id="operations-instance" class="operations-tab-panel" role="tabpanel" aria-labelledby="operations-tab-instance" hidden>
           <div id="setup-checklist" class="panel setup-checklist"></div>
-          <article class="panel">
-            <div class="panel-heading"><div><h2>Cloudflare Tunnel</h2><p class="muted">Run a remotely managed <code>cloudflared</code> connector without exposing the tunnel token in the process command line.</p></div><span id="cloudflare-tunnel-status" class="badge">Disabled</span></div>
-            <form id="cloudflare-tunnel-form" class="form-grid compact-grid">
-              <label class="checkbox-line"><input id="cloudflare-tunnel-enabled" type="checkbox"><span>Enable connector</span></label>
-              <label><span>New tunnel token</span><input id="cloudflare-tunnel-token" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved token"><small id="cloudflare-tunnel-token-status">No token is saved.</small></label>
-              <label class="checkbox-line span-2"><input id="clear-cloudflare-tunnel-token" type="checkbox"><span>Clear the saved tunnel token</span></label>
-              <div id="cloudflare-tunnel-detail" class="notice span-2" aria-live="polite">The connector is disabled.</div>
-              <div class="form-actions span-2"><button class="button primary" type="submit">Save tunnel settings</button><button id="restart-cloudflare-tunnel" class="button secondary" type="button">Restart connector</button></div>
-            </form>
-            <p class="muted">Configure public hostnames in Cloudflare Zero Trust. Inside the SHAM container, route hosted domains to <code>http://127.0.0.1:80</code> when the shared edge listener is enabled, or route the dashboard to <code>http://127.0.0.1:8080</code>.</p>
+          <article class="panel tunnel-overview">
+            <div class="panel-heading"><div><p class="eyebrow">Outbound ingress</p><h2>Cloudflare Tunnel connectors</h2><p class="muted">Each site can run its own supervised <code>cloudflared</code> connector and encrypted token.</p></div><span id="cloudflare-tunnel-status" class="badge">0 active</span></div>
+            <div id="cloudflare-tunnel-list" class="connector-list"></div>
+            <p class="notice">Configure a connector from <strong>Sites → Site settings → Cloudflare Tunnel</strong>. Public hostnames and origin routes remain managed in Cloudflare Zero Trust.</p>
           </article>
           <div class="operations-grid">
             <article class="panel"><div class="panel-heading"><div><h2>External backups</h2><p class="muted">Create encrypted restic backups or transfer archives to local, S3-compatible, or SFTP storage.</p></div><button id="run-backup" class="button primary" type="button">Run backup</button></div><form id="backup-form" class="form-grid compact-grid"><label><span>Provider</span><select id="backup-provider"><option value="local">Local filesystem</option><option value="restic">Restic</option><option value="s3">S3-compatible</option><option value="sftp">SFTP</option></select></label><label><span>Schedule</span><input id="backup-schedule" value="0 2 * * *"></label><label class="span-2"><span>Destination / repository</span><input id="backup-destination" autocomplete="off"></label><label><span>Retention count</span><input id="backup-retention" type="number" min="1" max="365" value="14"></label><label class="checkbox-line"><input id="backup-enabled" type="checkbox"><span>Enable scheduled backups</span></label><label class="span-2"><span>Provider options (JSON)</span><textarea id="backup-options" rows="5" spellcheck="false">{}</textarea><small id="backup-secret-status">Credentials entered here are encrypted and are never returned by the API.</small></label><div class="form-actions span-2"><button class="button primary" type="submit">Save backup settings</button></div></form><div id="backup-list" class="event-list"></div></article>
@@ -428,6 +423,21 @@ exports.activate = ({ data, settings, log }) =&gt; ({
             <label><span>Challenge difficulty</span><input id="site-anubis-difficulty" type="number" min="1" max="10" value="4"></label>
             <label class="span-2"><span>Custom Anubis policy</span><textarea id="site-anubis-policy" rows="7" placeholder="Leave blank for the selected preset"></textarea></label>
             <p class="notice span-2"><strong>Anubis is not volumetric DDoS protection.</strong> It can deter scraping and automated browsers, but may challenge legitimate users, accessibility tools, API clients, archivers, or JavaScript-disabled browsers. Keep an emergency bypass path and test before enabling it.</p>
+          </div>
+        </details>
+        <details class="advanced-section span-2 admin-only" id="site-cloudflare-tunnel-options" hidden>
+          <summary><span><strong>Cloudflare Tunnel</strong><small>Give this site its own outbound-only connector and encrypted token.</small></span><span class="details-indicator">＋</span></summary>
+          <div class="advanced-content form-grid">
+            <div class="tunnel-status-card span-2">
+              <div><span class="eyebrow">Connector</span><strong id="site-cloudflare-tunnel-title">Disabled</strong></div>
+              <span id="site-cloudflare-tunnel-status" class="badge">Disabled</span>
+            </div>
+            <label class="checkbox-line span-2"><input id="site-cloudflare-tunnel-enabled" type="checkbox"><span>Enable this site's connector</span></label>
+            <label class="span-2"><span>New tunnel token</span><input id="site-cloudflare-tunnel-token" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved token"><small id="site-cloudflare-tunnel-token-status">No token is saved.</small></label>
+            <label class="checkbox-line span-2"><input id="site-clear-cloudflare-tunnel-token" type="checkbox"><span>Clear the saved token</span></label>
+            <div id="site-cloudflare-tunnel-detail" class="notice span-2" aria-live="polite">Save the site before configuring a tunnel.</div>
+            <div class="form-actions span-2"><button id="save-site-cloudflare-tunnel" class="button primary" type="button">Save tunnel</button><button id="restart-site-cloudflare-tunnel" class="button secondary" type="button">Restart connector</button></div>
+            <p class="muted span-2">Create the tunnel and hostname route in Cloudflare Zero Trust. Point the route at this site's reachable SHAM origin, typically the shared edge listener for domain-routed traffic.</p>
           </div>
         </details>
         <details class="advanced-section span-2" id="delivery-options">
