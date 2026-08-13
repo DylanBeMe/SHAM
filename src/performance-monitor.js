@@ -80,7 +80,9 @@ class PerformanceMonitor {
              total_errors AS totalErrors, total_response_ms AS totalResponseMs
       FROM site_stats
     `);
-    this.readSiteMetadata = db.prepare('SELECT id, name, memory_limit_mb AS memoryLimitMb FROM sites');
+    this.readSiteMetadata = db.prepare('SELECT id, name, memory_limit_mb AS memoryLimitMb, runtime_isolation FROM sites');
+    this.readSetting = db.prepare('SELECT value FROM settings WHERE key = ?');
+    this.pruneSamples = db.prepare("DELETE FROM performance_samples WHERE sampled_at < datetime('now', '-7 days')");
     this.writeSample = db.prepare(`
       INSERT INTO performance_samples (sampled_at, cpu_percent, rss_bytes, heap_bytes, event_loop_ms, disk_percent, load_1m, running_sites)
       VALUES (CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
@@ -106,7 +108,7 @@ class PerformanceMonitor {
   }
 
   threshold(key, fallback) {
-    const row = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    const row = this.readSetting.get(key);
     const value = Number(row?.value);
     return Number.isFinite(value) ? value : fallback;
   }
@@ -142,7 +144,7 @@ class PerformanceMonitor {
     const sites = await mapWithConcurrency(running, PERFORMANCE_SITE_CONCURRENCY, async ([rawId, runtime]) => {
       const id = Number(rawId);
       const site = metadata.get(id);
-      const status = this.manager.statusFor(id);
+      const status = this.manager.statusFor(id, site);
       const memory = status.isolation === 'docker' ? null : await processMemory(runtime.child?.pid);
       const totals = mergeCounters(rows.get(id), this.manager.pendingStats?.get(id));
       const previous = this.previousSiteCounters.get(id);
@@ -251,7 +253,7 @@ class PerformanceMonitor {
     this.sampleCount += 1;
     try {
       this.writeSample.run(cpuPercent, memory.rss, memory.heapUsed, eventLoopP99Ms, disk.percent, load[0], this.manager.running.size);
-      if (this.sampleCount % 60 === 0) this.db.prepare("DELETE FROM performance_samples WHERE sampled_at < datetime('now', '-7 days')").run();
+      if (this.sampleCount % 60 === 0) this.pruneSamples.run();
     } catch (error) { this.manager.log(null, 'error', `Could not persist performance sample: ${error.message}`); }
 
     if (cpuPercent > thresholds.cpuPercent) this.raise('instance-cpu', 'warning', 'High SHAM CPU usage', `${cpuPercent.toFixed(1)}% CPU used by the dashboard process.`);

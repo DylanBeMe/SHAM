@@ -4,7 +4,7 @@ function registerAdminRoutes(ctx) {
   const {
     app, requireAuth, requireAdmin, pluginManager, publicUser, multipart, pluginUpload, validatePluginArchiveFile,
     bool, cleanupUploadedFiles, serializePluginMutation, integrationSettings, securitySettings, getSetting, setSetting,
-    setSecretSetting, getSecretSetting, rotateMasterKey, verifyPassword, writeCloudflareCredentials, recordAudit,
+    setSecretSetting, getSecretSetting, rotateMasterKey, verifyPassword, stepUpLimiter, writeCloudflareCredentials, recordAudit,
     manager, siteRows, getSiteOr404, syncCloudflareRecord, cloudflarePortWarning, syncCloudflareFirewall,
     acquireCertificateOperation, releaseCertificateOperation, stopRunningSitesOnPort, renewalNeedsPort80, issueCertificate,
     hasCertificate, restoreEnabledSites, renewCertificates, db, activeAdminCount, registrationEnabled, integerSetting,
@@ -100,12 +100,13 @@ app.get('/api/plugins', requireAuth, (req, res) => res.json({
         alert_error_percent: String(integerSetting(req.body.alertErrorPercent, 'Error-rate alert threshold', 1, 100))
       };
       db.transaction(() => { for (const [key, value] of Object.entries(values)) setSetting(key, value); })();
+      manager.setPrivacyMode(privacy);
       recordAudit(req.user.id, 'settings.security');
       res.json({ security: securitySettings() });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
-  app.post('/api/admin/security/rotate-master-key', requireAuth, requireAdmin, async (req, res) => {
+  app.post('/api/admin/security/rotate-master-key', requireAuth, requireAdmin, stepUpLimiter, async (req, res) => {
     try {
       const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
       if (!(await verifyPassword(String(req.body.password || ''), user.password_salt, user.password_hash))) return res.status(401).json({ error: 'Password confirmation failed.' });

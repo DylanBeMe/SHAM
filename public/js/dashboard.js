@@ -253,7 +253,7 @@ function renderVisitors(visitors) {
   }
   target.innerHTML = visitors.map((visitor) => {
     const ip = String(visitor.ip || '');
-    const actionable = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip) || ip.includes(':');
+    const actionable = Boolean(visitor.actionable);
     return `<tr data-visitor-site-id="${visitor.site_id}" data-visitor-ip="${escapeHtml(ip)}">
       <td><code>${escapeHtml(ip)}</code></td>
       <td><span class="client-badge ${escapeHtml(visitor.client_type || 'unknown')}">${escapeHtml(clientTypeLabel(visitor.client_type))}</span></td>

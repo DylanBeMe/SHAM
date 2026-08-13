@@ -121,6 +121,7 @@ app.use(express.json({
 app.use(express.urlencoded({ extended: false, limit: '2mb' }));
 
 const authLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 30 });
+const stepUpLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 20 });
 const webhookLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 120 });
 const upload = multer({
   storage: new CappedDiskStorage(UPLOAD_TMP_DIR, UPLOAD_LIMIT_BYTES),
@@ -459,7 +460,7 @@ function securitySettings() {
     allowUnsignedPlugins: getSetting('allow_unsigned_plugins', '0') === '1',
     pluginTrustedKeys: Array.isArray(trustedKeys) ? trustedKeys : [],
     logRetentionDays: Number(getSetting('log_retention_days', '30')) || 30,
-    visitorPrivacyMode: getSetting('visitor_privacy_mode', 'mask'),
+    visitorPrivacyMode: getSetting('visitor_privacy_mode', 'none'),
     alertCpuPercent: Number(getSetting('alert_cpu_percent', '90')) || 90,
     alertEventLoopMs: Number(getSetting('alert_event_loop_ms', '250')) || 250,
     alertDiskPercent: Number(getSetting('alert_disk_percent', '90')) || 90,
@@ -494,7 +495,7 @@ async function restoreEnabledSites(ids) {
   const warnings = [];
   for (const id of [...new Set(ids)]) {
     const site = manager.getSite(id);
-    if (!site?.enabled || manager.statusFor(id).running) continue;
+    if (!site?.enabled || manager.statusFor(id, site).running) continue;
     try { await manager.start(id); }
     catch (error) {
       const warning = `Site ${id} could not be restored after the certificate operation: ${error.message}`;
@@ -537,7 +538,7 @@ const adminRouteContext = {
 const operationsRouteContext = {
   app, requireAuth, requireAdmin, webhookLimiter, serializeSiteMutation, db, crypto, DEPLOY_WEBHOOK_DUMMY_SECRET,
   operationsManager, manager, recordAudit, getSiteOr404, bool, validateSiteInput, uniqueSlug, writeSiteConfig,
-  getSecretSetting, setSecretSetting, getSetting, setSetting, cloudflareTunnels, legacyCloudflareTunnel, updateManager, verifyPassword,
+  getSecretSetting, setSecretSetting, getSetting, setSetting, cloudflareTunnels, legacyCloudflareTunnel, updateManager, verifyPassword, stepUpLimiter,
   multipart, updateUpload, cleanupUploadedFiles
 };
 
@@ -560,7 +561,7 @@ app.get('/api/bootstrap', optionalAuth, (req, res) => {
 app.get('/api/public/status', (_req, res) => {
   if (getSetting('public_status_enabled', '0') !== '1') return res.status(404).json({ error: 'Public status page is disabled.' });
   const sites = db.prepare("SELECT id, name FROM sites WHERE enabled = 1 ORDER BY name COLLATE NOCASE").all().map((site) => {
-    const runtime = manager.statusFor(site.id);
+    const runtime = manager.statusFor(site.id, site);
     return { name: site.name, status: runtime.running && runtime.health?.status !== 'unhealthy' ? runtime.health?.status || 'online' : 'offline' };
   });
   res.json({ title: getSetting('public_status_title', 'SHAM service status'), generatedAt: new Date().toISOString(), sites });
@@ -581,7 +582,7 @@ app.get('/status', (_req, res) => {
   }).format(generatedDate);
   const statusLabels = { healthy: 'Healthy', online: 'Online', degraded: 'Degraded', starting: 'Starting', offline: 'Offline' };
   const sites = db.prepare("SELECT id, name FROM sites WHERE enabled = 1 ORDER BY name COLLATE NOCASE").all().map((site) => {
-    const runtime = manager.statusFor(site.id);
+    const runtime = manager.statusFor(site.id, site);
     const runtimeStatus = runtime.running && runtime.health?.status !== 'unhealthy' ? runtime.health?.status || 'online' : 'offline';
     const status = Object.hasOwn(statusLabels, runtimeStatus) ? runtimeStatus : 'offline';
     return `<article class="status-card"><span class="status-indicator ${status}" aria-hidden="true"></span><div><strong>${escapeStatusHtml(site.name)}</strong><small>${statusLabels[status]}</small></div></article>`;
@@ -708,7 +709,7 @@ app.get('/api/security', requireAuth, (req, res) => {
   res.json({ user: publicUser(user), passkeys, recoveryCodesRemaining: (() => { try { return JSON.parse(user.recovery_codes_json || '[]').length; } catch { return 0; } })(), webauthnAvailable: true });
 });
 
-app.post('/api/security/totp/setup', requireAuth, async (req, res) => {
+app.post('/api/security/totp/setup', requireAuth, stepUpLimiter, async (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   const suppliedPassword = typeof req.body.password === 'string' && req.body.password.length <= 200 ? req.body.password : '';
   if (!(await verifyPassword(suppliedPassword, user.password_salt, user.password_hash))) {
@@ -731,7 +732,7 @@ app.post('/api/security/totp/enable', requireAuth, (req, res) => {
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
 
-app.post('/api/security/totp/disable', requireAuth, async (req, res) => {
+app.post('/api/security/totp/disable', requireAuth, stepUpLimiter, async (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   if (!(await verifyPassword(String(req.body.password || ''), user.password_salt, user.password_hash))) return res.status(401).json({ error: 'Password confirmation failed.' });
   disableTotp(db, req.user.id);
@@ -739,7 +740,7 @@ app.post('/api/security/totp/disable', requireAuth, async (req, res) => {
   res.json({ user: publicUser(securityUser(req.user.id)) });
 });
 
-app.post('/api/security/recovery-codes/regenerate', requireAuth, async (req, res) => {
+app.post('/api/security/recovery-codes/regenerate', requireAuth, stepUpLimiter, async (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   if (!(await verifyPassword(String(req.body.password || ''), user.password_salt, user.password_hash))) return res.status(401).json({ error: 'Password confirmation failed.' });
   if (!user.totp_enabled) return res.status(400).json({ error: 'Enable TOTP before generating recovery codes.' });
@@ -749,7 +750,7 @@ app.post('/api/security/recovery-codes/regenerate', requireAuth, async (req, res
   res.json({ recoveryCodes: codes });
 });
 
-app.post('/api/security/passkeys/options', requireAuth, async (req, res) => {
+app.post('/api/security/passkeys/options', requireAuth, stepUpLimiter, async (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   const suppliedPassword = typeof req.body.password === 'string' && req.body.password.length <= 200 ? req.body.password : '';
   if (!(await verifyPassword(suppliedPassword, user.password_salt, user.password_hash))) {
@@ -777,7 +778,7 @@ app.post('/api/security/passkeys/register', requireAuth, (req, res) => {
   }
 });
 
-app.delete('/api/security/passkeys/:id', requireAuth, async (req, res) => {
+app.delete('/api/security/passkeys/:id', requireAuth, stepUpLimiter, async (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   if (!(await verifyPassword(String(req.body.password || ''), user.password_salt, user.password_hash))) return res.status(401).json({ error: 'Password confirmation failed.' });
   const result = db.prepare('DELETE FROM passkeys WHERE id = ? AND user_id = ?').run(Number(req.params.id), req.user.id);
@@ -786,7 +787,8 @@ app.delete('/api/security/passkeys/:id', requireAuth, async (req, res) => {
   res.status(204).end();
 });
 
-app.use(['/api/sites/:id', '/api/admin/sites/:id'], requireAuth, serializeSiteMutation);
+app.use('/api/sites/:id', requireAuth, serializeSiteMutation);
+app.use('/api/admin/sites/:id', requireAuth, requireAdmin, serializeSiteMutation);
 
 registerSiteRoutes(routeContext);
 

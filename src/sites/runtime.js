@@ -17,7 +17,7 @@ class SiteManager extends DeliverySiteManager {
     created.server.keepAliveTimeout = 5000;
     if (site.max_connections > 0) created.server.maxConnections = site.max_connections;
     await listen(created.server, site.port, site.bind_host);
-    return { server: created.server, app, protocol: created.protocol, type: 'static' };
+    return { server: created.server, app, protocol: created.protocol, type: 'static', site };
   }
 
   async startNodeContainer(site, root, entry) {
@@ -67,8 +67,9 @@ class SiteManager extends DeliverySiteManager {
     proxy.on('error', (error, _req, responseOrSocket) => {
       this.errors.set(site.id, `Proxy: ${error.message}`);
       if (typeof responseOrSocket?.writeHead === 'function') {
+        if (responseOrSocket.headersSent) return responseOrSocket.destroy?.(error);
         const page = this.errorPage(site, 502, 'Hosted Node.js server is unavailable.');
-        if (!responseOrSocket.headersSent) responseOrSocket.writeHead(502, { 'Content-Type': page.type });
+        responseOrSocket.writeHead(502, { 'Content-Type': page.type });
         responseOrSocket.end(page.body);
       } else responseOrSocket?.destroy?.();
     });
@@ -82,15 +83,14 @@ class SiteManager extends DeliverySiteManager {
       if (site.max_connections > 0) created.server.maxConnections = site.max_connections;
       const webSockets = new Set();
       created.server.on('upgrade', (req, socket, head) => {
-        const access = this.checkAccess(site, req);
-        if (!access.allowed || !this.operationalGuard(site, req, { setHeader() {}, end() {}, set statusCode(_v) {} })) { socket.end(`HTTP/1.1 ${access.status || 503} Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); return; }
+        if (!this.guardWebSocket(site, req, socket)) return;
         webSockets.add(socket);
         socket.once('close', () => webSockets.delete(socket));
         proxy.ws(req, socket, head);
       });
       await listen(created.server, site.port, site.bind_host);
       if (child.exitCode !== null || child.signalCode !== null) { proxy.close(); await closeServer(created.server); throw new Error(`${isolation === 'docker' ? 'Container' : 'Node process'} exited during startup.`); }
-      const runtime = { server: created.server, protocol: created.protocol, type: 'node', proxy, child, internalPort, internalHost, stopping: false, exited: false, isolation, webSockets };
+      const runtime = { server: created.server, protocol: created.protocol, type: 'node', proxy, child, internalPort, internalHost, stopping: false, exited: false, isolation, webSockets, site };
       child.once('exit', (code, signal) => {
         runtime.exited = true;
         if (runtime.stopping) return;
@@ -108,6 +108,11 @@ class SiteManager extends DeliverySiteManager {
     try { target = new URL(site.proxy_target); }
     catch { throw new Error('Reverse proxy target must be a valid HTTP or HTTPS URL.'); }
     if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Reverse proxy target must use HTTP or HTTPS.');
+    const targetPort = Number(target.port || (target.protocol === 'https:' ? 443 : 80));
+    const targetHost = target.hostname.toLowerCase();
+    const bindHost = String(site.bind_host || '').toLowerCase();
+    const loopbackTarget = targetHost === 'localhost' || targetHost === '::1' || /^127(?:\.\d{1,3}){3}$/.test(targetHost);
+    if (targetPort === Number(site.port) && (loopbackTarget || (bindHost && targetHost === bindHost))) throw new Error('Reverse proxy target points back to this site listener.');
     const upstreamTimeout = Math.min(Math.max(Number(site.proxy_timeout_ms || HTTP_REQUEST_TIMEOUT_MS), 1000), 300000);
     const proxyHeaders = site.proxy_host_header ? { Host: site.proxy_host_header } : undefined;
     const proxy = httpProxy.createProxyServer({ target: target.href, ws: true, xfwd: true, changeOrigin: !site.proxy_host_header, headers: proxyHeaders, timeout: upstreamTimeout, proxyTimeout: upstreamTimeout });
@@ -115,8 +120,9 @@ class SiteManager extends DeliverySiteManager {
     proxy.on('error', (error, _req, responseOrSocket) => {
       this.errors.set(site.id, `Proxy: ${error.message}`);
       if (typeof responseOrSocket?.writeHead === 'function') {
+        if (responseOrSocket.headersSent) return responseOrSocket.destroy?.(error);
         const page = this.errorPage(site, 502, 'Upstream service is unavailable.');
-        if (!responseOrSocket.headersSent) responseOrSocket.writeHead(502, { 'Content-Type': page.type });
+        responseOrSocket.writeHead(502, { 'Content-Type': page.type });
         responseOrSocket.end(page.body);
       } else responseOrSocket?.destroy?.();
     });
@@ -128,15 +134,14 @@ class SiteManager extends DeliverySiteManager {
     if (site.max_connections > 0) created.server.maxConnections = site.max_connections;
     const webSockets = new Set();
     created.server.on('upgrade', (req, socket, head) => {
-      const access = this.checkAccess(site, req);
-      if (!access.allowed) { socket.end(`HTTP/1.1 ${access.status || 403} Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); return; }
+      if (!this.guardWebSocket(site, req, socket)) return;
       webSockets.add(socket);
       socket.once('close', () => webSockets.delete(socket));
       proxy.ws(req, socket, head);
     });
     try { await listen(created.server, site.port, site.bind_host); }
     catch (error) { proxy.close(); throw error; }
-    return { server: created.server, protocol: created.protocol, type: 'proxy', proxy, target: target.href, isolation: 'proxy', webSockets };
+    return { server: created.server, protocol: created.protocol, type: 'proxy', proxy, target: target.href, isolation: 'proxy', webSockets, site };
   }
 
   async startNode(site, root, entry) {

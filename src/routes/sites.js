@@ -28,10 +28,12 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
     if (!site) return;
     const ip = String(req.body.ip || '').trim();
     if (!net.isIP(ip)) return res.status(400).json({ error: 'Only a full IPv4 or IPv6 address can be banned. Switch visitor privacy to full IP storage if addresses are masked or hashed.' });
-    const blockedIps = [...new Set([...(site.firewall?.blockedIps || []), ip])];
+    const existingBlockedIps = site.firewall?.blockedIps || [];
+    if (!existingBlockedIps.includes(ip) && existingBlockedIps.length >= 250) return res.status(400).json({ error: 'Blocked IP list can contain at most 250 entries. Remove an address before adding another.' });
+    const blockedIps = [...new Set([...existingBlockedIps, ip])];
     const firewall = { ...(site.firewall || {}), blockedIps };
     db.prepare('UPDATE sites SET firewall_enabled = 1, firewall_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(JSON.stringify(firewall), site.id);
-    manager.invalidateSiteCache(site.id);
+    manager.refreshLiveFirewall(site.id);
     recordAudit(req.user.id, 'site.firewall.ip-ban', { siteId: site.id, ip });
     res.json({ site: manager.decorate(manager.getSite(site.id)), banned: ip });
   });
@@ -43,7 +45,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
     if (!net.isIP(ip)) return res.status(400).json({ error: 'A full IPv4 or IPv6 address is required.' });
     const firewall = { ...(site.firewall || {}), blockedIps: (site.firewall?.blockedIps || []).filter((value) => value !== ip) };
     db.prepare('UPDATE sites SET firewall_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(JSON.stringify(firewall), site.id);
-    manager.invalidateSiteCache(site.id);
+    manager.refreshLiveFirewall(site.id);
     recordAudit(req.user.id, 'site.firewall.ip-unban', { siteId: site.id, ip });
     res.json({ site: manager.decorate(manager.getSite(site.id)), unbanned: ip });
   });
@@ -62,7 +64,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       LEFT JOIN site_stats ON site_stats.site_id = sites.id
     `).get();
     const sites = db.prepare(`
-      SELECT sites.id, sites.name, sites.runtime_type, sites.enabled,
+      SELECT sites.id, sites.name, sites.runtime_type, sites.runtime_isolation, sites.enabled,
         COALESCE(site_stats.total_requests, 0) AS requests,
         COALESCE(site_stats.total_bytes, 0) AS bytes,
         COALESCE(site_stats.total_errors, 0) AS errors,
@@ -71,7 +73,10 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       FROM sites
       LEFT JOIN site_stats ON site_stats.site_id = sites.id
       ORDER BY requests DESC, sites.name COLLATE NOCASE
-    `).all().map((row) => ({ ...row, enabled: Boolean(row.enabled), running: manager.statusFor(row.id).running }));
+    `).all().map((row) => {
+      const runtime = manager.statusFor(row.id, row);
+      return { ...row, enabled: Boolean(row.enabled), running: runtime.running, healthStatus: runtime.health?.status || null };
+    });
     const daily = db.prepare(`
       SELECT day, SUM(requests) AS requests, SUM(bytes) AS bytes, SUM(errors) AS errors
       FROM site_daily_stats
@@ -94,10 +99,10 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       JOIN sites ON sites.id = visitor.site_id
       ORDER BY visitor.last_request_at DESC
       LIMIT 100
-    `).all();
+    `).all().map((visitor) => ({ ...visitor, actionable: net.isIP(String(visitor.ip || '')) > 0 }));
     const clientTypes = db.prepare(`SELECT client_type AS type, SUM(requests) AS requests, COUNT(DISTINCT ip) AS visitors FROM site_visitor_stats GROUP BY client_type ORDER BY requests DESC`).all();
     const failedDeployments = db.prepare("SELECT COUNT(*) AS count FROM site_deployments WHERE status = 'failed' AND started_at >= datetime('now', '-7 days')").get().count;
-    const unhealthySites = sites.filter((site) => site.enabled && (!site.running || manager.statusFor(site.id).health?.status === 'unhealthy')).length;
+    const unhealthySites = sites.filter((site) => site.enabled && (!site.running || site.healthStatus === 'unhealthy')).length;
     const activeAlerts = performanceMonitor.payload().alerts?.length || 0;
     res.json({ totals: { ...totals, running: manager.running.size }, sites, daily, countries, visitors, clientTypes, attention: { unhealthySites, failedDeployments, activeAlerts } });
   });
@@ -271,7 +276,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
         deployment = operationsManager.listDeployments(id).find((item) => item.id === deploymentId) || null;
       }
 
-      let warning = null;
+      let warning = deployment?.warning || null;
       if (config.enabled) {
         try {
           await manager.start(id);
@@ -298,6 +303,11 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
           manager.log(id, 'error', `Git provider webhook configuration failed: ${error.message}`);
         }
       }
+      const deploymentRecordId = Number(source === 'git' ? deployment?.deploymentId : deployment?.id);
+      if (warning && Number.isSafeInteger(deploymentRecordId) && deploymentRecordId > 0) {
+        operationsManager.updateDeploymentStatus(deploymentRecordId, 'deployed-with-warning', warning);
+      }
+      edgeProxy.invalidateSiteCache();
       recordAudit(req.user.id, 'site.create', { id, name: config.name, port: config.port, runtime: config.runtime_type, source });
       res.status(201).json({ site: manager.decorate(manager.getSite(id)), deployment, warning });
     } catch (error) {
@@ -351,6 +361,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
         throw new Error(`The new settings could not be applied and were rolled back: ${restartError.message}.${suffix}`);
       }
 
+      edgeProxy.invalidateSiteCache();
       recordAudit(req.user.id, 'site.update', { id: site.id });
       const updated = manager.getSite(site.id);
       const warnings = [];
@@ -392,6 +403,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
           throw new Error(`The site was stopped, but SHAM could not persist its disabled state: ${error.message}`);
         }
       }
+      edgeProxy.invalidateSiteCache();
       recordAudit(req.user.id, enabled ? 'site.start' : 'site.stop', { id: site.id });
       res.json({ site: manager.decorate(manager.getSite(site.id)) });
     } catch (error) {
@@ -478,7 +490,13 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
         warning = [warning, compatibilityWarning].filter(Boolean).join(' ');
       }
       recordAudit(req.user.id, 'site.content.replace', { id: site.id });
-      operationsManager.recordDeployment(site.id, { source: 'upload', status: warning ? 'deployed-with-warning' : 'running', detail: warning || 'Project files replaced.' });
+      try {
+        operationsManager.recordDeployment(site.id, { source: 'upload', status: warning ? 'deployed-with-warning' : 'running', detail: warning || 'Project files replaced.' });
+      } catch (historyError) {
+        const historyWarning = `Content is deployed, but SHAM could not record deployment history: ${historyError.message}`;
+        warning = [warning, historyWarning].filter(Boolean).join(' ');
+        manager.log(site.id, 'error', historyWarning);
+      }
       res.json({ site: manager.decorate(manager.getSite(site.id)), warning, rollbackSnapshot });
     } catch (error) {
       if (wasRunning && !manager.statusFor(site.id).running) {
@@ -590,6 +608,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       }
       db.prepare('DELETE FROM sites WHERE id = ?').run(site.id);
       manager.forgetSite(site.id);
+      edgeProxy.invalidateSiteCache();
       if (filesStaged) {
         fs.rm(trash, { recursive: true, force: true }, (cleanupError) => {
           if (cleanupError) manager.log(null, 'error', `Could not remove deleted site data for ${site.name}: ${cleanupError.message}`, { deletedSiteId: site.id });

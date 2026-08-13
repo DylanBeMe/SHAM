@@ -37,6 +37,8 @@ const state = {
   siteToolsDependencyRequest: 0,
   siteWorkspaceId: null,
   siteWorkspaceTab: 'overview',
+  siteWorkspaceDeploymentsRequest: 0,
+  siteWorkspaceLogsRequest: 0,
   wizardStep: 1,
   gitRepositories: [],
   commandIndex: 0

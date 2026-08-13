@@ -428,7 +428,7 @@ class PluginManager {
           if (!this.siteManager) return [];
           return this.db.prepare('SELECT id FROM sites ORDER BY name COLLATE NOCASE').all().map(({ id }) => {
             const site = this.siteManager.getSite(id);
-            return { id: site.id, name: site.name, runtimeType: site.runtime_type, enabled: Boolean(site.enabled), status: this.siteManager.statusFor(id) };
+            return { id: site.id, name: site.name, runtimeType: site.runtime_type, enabled: Boolean(site.enabled), status: this.siteManager.statusFor(id, site) };
           });
         },
         status: (siteId) => { requirePermission('runtime:read'); return this.siteManager?.statusFor(Number(siteId)) || null; },

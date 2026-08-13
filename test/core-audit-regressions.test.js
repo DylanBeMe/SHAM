@@ -8,7 +8,8 @@ const { root, source } = require('./source-tree');
 test('site mutations are serialized and large file routes use async helpers', () => {
   const server = source('src/server.js');
   assert.match(server, /serializeSiteMutation/);
-  assert.match(server, /app\.use\(\['\/api\/sites\/:id', '\/api\/admin\/sites\/:id'\], requireAuth, serializeSiteMutation\)/);
+  assert.match(server, /app\.use\('\/api\/sites\/:id', requireAuth, serializeSiteMutation\)/);
+  assert.match(server, /app\.use\('\/api\/admin\/sites\/:id', requireAuth, requireAdmin, serializeSiteMutation\)/);
   for (const helper of ['listSiteFilesAsync', 'readTextFileAsync', 'writeTextFileAsync', 'replaceSingleFileFromPathAsync', 'deleteSingleFileAsync', 'stageSingleFileDeletionAsync']) {
     assert.match(server, new RegExp(`\\b${helper}\\b`));
   }

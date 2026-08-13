@@ -35,7 +35,8 @@ test('every operational API route is authenticated and every admin API is admini
     assert.match(line, /requireAuth/, `route lacks authentication: ${line.trim()}`);
     if (route.startsWith('/api/admin/')) assert.match(line, /requireAdmin/, `admin route lacks role enforcement: ${line.trim()}`);
   }
-  assert.match(server, /app\.use\(\['\/api\/sites\/:id', '\/api\/admin\/sites\/:id'\], requireAuth, serializeSiteMutation\)/);
+  assert.match(server, /app\.use\('\/api\/sites\/:id', requireAuth, serializeSiteMutation\)/);
+  assert.match(server, /app\.use\('\/api\/admin\/sites\/:id', requireAuth, requireAdmin, serializeSiteMutation\)/);
   assert.match(server, /app\.use\('\/api\/admin\/plugins', requireAuth, requireAdmin, serializePluginMutation\)/);
 });
 

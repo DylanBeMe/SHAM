@@ -9,7 +9,9 @@ class ConfigurationOperations {
     this.snapshotManager = snapshotManager;
     this.edgeProxy = edgeProxy;
     this.runningJobs = new Map();
+    this.operationProcesses = new Set();
     this.previewRuntimes = new Map();
+    this.previewHostnames = new Map();
     this.anubisRuntimes = new Map();
     this.stopping = false;
     this.jobTickPromise = null;
@@ -17,13 +19,46 @@ class ConfigurationOperations {
     this.lastBackupMinute = '';
     this.deliveredAlerts = new Map();
     this.lastTelemetryAt = 0;
+    this.recoverInterruptedRuns();
     this.ensureJobSchedules();
-    this.clearStalePreviews();
+    this.stalePreviewCleanupPromise = this.clearStalePreviews().catch((error) => this.manager.log(null, 'error', `Could not clean stale previews: ${error.message}`));
     this.timer = setInterval(() => this.tick().catch((error) => this.manager.log(null, 'error', `Operations scheduler failed: ${error.message}`)), JOB_POLL_INTERVAL_MS);
     this.timer.unref?.();
   }
 
   setEdgeProxy(edgeProxy) { this.edgeProxy = edgeProxy; }
+
+  trackProcess(child) {
+    if (!child) return;
+    this.operationProcesses.add(child);
+    const release = () => this.operationProcesses.delete(child);
+    child.once('exit', release);
+    child.once('error', release);
+  }
+
+  trackedProcessOptions(options = {}) {
+    return { ...options, onSpawn: (child) => { this.trackProcess(child); options.onSpawn?.(child); } };
+  }
+
+  recoverInterruptedRuns() {
+    const transaction = this.db.transaction(() => {
+      const deployments = this.db.prepare(`UPDATE site_deployments
+        SET status = 'failed', detail = CASE WHEN detail = '' THEN 'Interrupted by SHAM restart.' ELSE substr(detail || '\nInterrupted by SHAM restart.', 1, 4000) END, finished_at = CURRENT_TIMESTAMP
+        WHERE status IN ('queued', 'building') AND finished_at IS NULL`).run().changes;
+      const jobs = this.db.prepare(`UPDATE job_runs
+        SET status = 'failed', output = substr(output || CASE WHEN output = '' THEN '' ELSE '\n' END || '[SHAM] Interrupted by control-plane restart.', 1, 100000),
+            finished_at = CURRENT_TIMESTAMP,
+            duration_ms = COALESCE(duration_ms, CAST(MAX(0, (julianday(CURRENT_TIMESTAMP) - julianday(started_at)) * 86400000) AS INTEGER))
+        WHERE status = 'running' AND finished_at IS NULL`).run().changes;
+      const backups = this.db.prepare(`UPDATE backup_runs
+        SET status = 'failed', detail = CASE WHEN COALESCE(detail, '') = '' THEN 'Interrupted by SHAM restart.' ELSE substr(detail || '\nInterrupted by SHAM restart.', 1, 4000) END, finished_at = CURRENT_TIMESTAMP
+        WHERE status = 'running' AND finished_at IS NULL`).run().changes;
+      return { deployments, jobs, backups };
+    });
+    const recovered = transaction();
+    const total = recovered.deployments + recovered.jobs + recovered.backups;
+    if (total) this.manager.log(null, 'warning', `Recovered ${total} interrupted operation${total === 1 ? '' : 's'} after restart.`);
+  }
 
   ensureJobSchedules() {
     for (const job of this.db.prepare('SELECT id, schedule FROM site_jobs').all()) {
@@ -37,10 +72,10 @@ class ConfigurationOperations {
     }
   }
 
-  clearStalePreviews() {
+  async clearStalePreviews() {
     const rows = this.db.prepare('SELECT directory_name FROM preview_deployments').all();
     this.db.prepare('DELETE FROM preview_deployments').run();
-    for (const row of rows) fs.promises.rm(path.join(PREVIEWS_DIR, row.directory_name), { recursive: true, force: true }).catch(() => {});
+    await Promise.allSettled(rows.map((row) => fs.promises.rm(path.join(PREVIEWS_DIR, row.directory_name), { recursive: true, force: true })));
   }
 
   siteEnvironment(siteId, scope = 'runtime') {
@@ -126,7 +161,7 @@ class ConfigurationOperations {
     const source = this.db.prepare('SELECT id, name FROM sites WHERE id = ?').get(sourceId);
     const target = this.db.prepare('SELECT id, name FROM sites WHERE id = ?').get(targetId);
     if (!source || !target) throw new Error('Source or target site was not found.');
-    const variables = this.db.prepare('SELECT key, value, secret, scope FROM site_env WHERE site_id = ? ORDER BY key').all(sourceId);
+    const variables = this.db.prepare("SELECT key, value, secret, scope FROM site_env WHERE site_id = ? AND key <> 'DEPLOY_WEBHOOK_SECRET' ORDER BY key").all(sourceId);
     const upsert = this.db.prepare(`
       INSERT INTO site_env (site_id, key, value, secret, scope, updated_at)
       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -214,15 +249,19 @@ class ConfigurationOperations {
   async executeSiteCommand(site, command, timeoutMs, onLine) {
     const root = siteRoot(site);
     if (site.runtime_isolation === 'docker') {
-      return runProcess(DOCKER_BIN, ['exec', `sham-site-${site.id}`, 'sh', '-lc', command], { timeoutMs, onLine });
+      return runProcess(DOCKER_BIN, ['exec', `sham-site-${site.id}`, 'sh', '-lc', command], this.trackedProcessOptions({ timeoutMs, onLine }));
     }
     const shell = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : '/bin/sh';
     const args = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-lc', command];
-    return runProcess(shell, args, { cwd: root, env: this.siteEnvironment(site.id, 'runtime'), timeoutMs, onLine, environmentMode: 'runtime' });
+    return runProcess(shell, args, this.trackedProcessOptions({ cwd: root, env: this.siteEnvironment(site.id, 'runtime'), timeoutMs, onLine, environmentMode: 'runtime' }));
   }
 
-  async runJob(jobId, trigger = 'manual') {
-    const job = this.db.prepare('SELECT * FROM site_jobs WHERE id = ?').get(Number(jobId));
+  async runJob(jobId, trigger = 'manual', expectedSiteId = null) {
+    const numericJobId = Number(jobId);
+    const numericSiteId = expectedSiteId == null ? null : Number(expectedSiteId);
+    const job = numericSiteId == null
+      ? this.db.prepare('SELECT * FROM site_jobs WHERE id = ?').get(numericJobId)
+      : this.db.prepare('SELECT * FROM site_jobs WHERE id = ? AND site_id = ?').get(numericJobId, numericSiteId);
     if (!job) throw new Error('Scheduled job not found.');
     const activeRuns = this.runningJobs.get(job.id) || new Set();
     if (activeRuns.size && !job.allow_overlap) throw new Error('This job is already running.');
@@ -340,8 +379,8 @@ class ConfigurationOperations {
         '--exclude=./tmp', '--exclude=./backups', '--exclude=./updates',
         '--exclude=./sham.db', '--exclude=./sham.db-wal', '--exclude=./sham.db-shm',
         '-czf', localPath, '-C', DATA_DIR, '.', '-C', databaseSnapshotDirectory, 'sham.db'
-      ], { timeoutMs: BACKUP_TIMEOUT_MS, onLine: (level, line) => this.manager.log(null, level, `backup: ${line}`) });
-      await runProcess(TAR_BIN, ['-tzf', localPath], { timeoutMs: Math.min(BACKUP_TIMEOUT_MS, 10 * 60 * 1000) });
+      ], this.trackedProcessOptions({ timeoutMs: BACKUP_TIMEOUT_MS, onLine: (level, line) => this.manager.log(null, level, `backup: ${line}`) }));
+      await runProcess(TAR_BIN, ['-tzf', localPath], this.trackedProcessOptions({ timeoutMs: Math.min(BACKUP_TIMEOUT_MS, 10 * 60 * 1000) }));
       await fs.promises.chmod(localPath, 0o600);
 
       const stat = await fs.promises.stat(localPath);
@@ -366,10 +405,10 @@ class ConfigurationOperations {
         destination = target;
       } else if (provider === 'restic') {
         if (!config.repository || !config.password) throw new Error('Restic repository and password are required.');
-        await runProcess(RESTIC_BIN, ['backup', localPath, '--tag', 'sham'], {
+        await runProcess(RESTIC_BIN, ['backup', localPath, '--tag', 'sham'], this.trackedProcessOptions({
           timeoutMs: BACKUP_TIMEOUT_MS,
           env: { RESTIC_REPOSITORY: config.repository, RESTIC_PASSWORD: config.password }
-        });
+        }));
         destination = String(config.repository);
       } else if (provider === 's3') {
         const s3Destination = String(config.destination || '');
@@ -379,7 +418,7 @@ class ConfigurationOperations {
         const target = `${s3Destination.replace(/\/$/, '')}/${filename}`;
         const args = ['s3', 'cp', localPath, target];
         if (config.endpoint) args.push('--endpoint-url', String(config.endpoint));
-        await runProcess(AWS_BIN, args, {
+        await runProcess(AWS_BIN, args, this.trackedProcessOptions({
           timeoutMs: BACKUP_TIMEOUT_MS,
           env: {
             AWS_ACCESS_KEY_ID: config.accessKey || '',
@@ -387,7 +426,7 @@ class ConfigurationOperations {
             AWS_SESSION_TOKEN: config.sessionToken || '',
             AWS_DEFAULT_REGION: config.region || ''
           }
-        });
+        }));
         destination = target;
       } else if (provider === 'sftp') {
         if (!config.host || !config.remotePath) throw new Error('SFTP host and remote path are required.');
@@ -412,10 +451,10 @@ class ConfigurationOperations {
           }
           args.push(target);
           const remote = `${String(config.remotePath).replace(/\/$/, '')}/${filename}`;
-          await runProcess(SFTP_BIN, args, {
+          await runProcess(SFTP_BIN, args, this.trackedProcessOptions({
             timeoutMs: BACKUP_TIMEOUT_MS,
             stdin: `put ${sftpQuote(localPath, 'Local backup path')} ${sftpQuote(remote, 'Remote backup path')}\n`
-          });
+          }));
           destination = `${target}:${remote}`;
         } finally {
           if (keyPath) await fs.promises.rm(keyPath, { force: true }).catch(() => {});

@@ -1,6 +1,7 @@
 'use strict';
 
 const { fs, path, crypto, http, https, net, spawn, execFile, Worker, zlib, promisify, express, httpProxy, SITES_DIR, NODE_START_TIMEOUT_MS, NPM_INSTALL_TIMEOUT_MS, NPM_INSTALL_WORKERS, NPM_INSTALL_QUEUE_LIMIT, HTTP_REQUEST_TIMEOUT_MS, STATS_FLUSH_INTERVAL_MS, VISITOR_RETENTION_DAYS, MINIFY_MAX_BYTES, MINIFY_CACHE_BYTES, MINIFY_WORKERS, MINIFY_QUEUE_LIMIT, COMPRESSION_WORKERS, COMPRESSION_QUEUE_LIMIT, VISITOR_PENDING_BUCKETS, FIREWALL_RATE_LIMIT_BUCKETS, TRUSTED_EDGE_PROXIES, DOCKER_BIN, DOCKER_INTERNAL_NETWORK, DOCKER_EGRESS_NETWORK, SITE_DATA_DIR, JWT_SECRET, safeRelativePath, certbotPaths, hasCertificate, runtimeEnvironment, buildEnvironment, operatorEnvironment, classifyClient, gzipAsync, brotliAsync, execFileAsync, COMPRESSIBLE_EXTENSIONS, INTERNAL_EDGE_TOKEN, REQUEST_IDENTITY, appendTail, cacheEntryBytes, responseChunkBytes, processOptions, terminateChild, ensureDockerInternalNetwork, terminateAndWait, realFileInside, realFileInsideAsync, hostForUrl, normalizeIp, requestHostname, TRUSTED_EDGE_RANGES, trustedEdgePeers, trustedEdgePeer, requestIdentity, buildIpBlockList, ipMatchesList, hydrateSite, listen, closeServer, freePort, waitForPort, siteIsolation, dockerContainerName } = require('./shared');
+const { maskIp } = require('../visitor-intelligence');
 
 class CoreSiteManager {
   constructor(db) {
@@ -16,7 +17,7 @@ class CoreSiteManager {
     this.events = [];
     this.activeDeploymentIds = new Map();
     try {
-      for (const row of db.prepare("SELECT site_id AS siteId, id FROM site_deployments WHERE status = 'running' ORDER BY id").all()) {
+      for (const row of db.prepare("SELECT site_id AS siteId, id FROM site_deployments WHERE status IN ('running', 'deployed-with-warning') ORDER BY id").all()) {
         this.activeDeploymentIds.set(Number(row.siteId), Number(row.id));
       }
     } catch { /* Older/incomplete databases are migrated by db.js before normal startup. */ }
@@ -71,14 +72,15 @@ class CoreSiteManager {
     this.writeVisitorStats = db.prepare(`
       INSERT INTO site_visitor_stats (site_id, ip, country, client_type, user_agent, requests, bytes, errors, last_request_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(site_id, ip, country) DO UPDATE SET
-        client_type = excluded.client_type,
+      ON CONFLICT(site_id, ip, country, client_type) DO UPDATE SET
         user_agent = excluded.user_agent,
         requests = requests + excluded.requests,
         bytes = bytes + excluded.bytes,
         errors = errors + excluded.errors,
         last_request_at = CURRENT_TIMESTAMP
     `);
+    this.pruneExpiredVisitorStats = db.prepare("DELETE FROM site_visitor_stats WHERE last_request_at < datetime('now', ?)");
+    this.visitorSitesForPrune = db.prepare('SELECT DISTINCT site_id AS siteId FROM site_visitor_stats');
     this.pruneVisitorStats = db.prepare(`
       DELETE FROM site_visitor_stats
       WHERE site_id = ? AND (
@@ -88,6 +90,7 @@ class CoreSiteManager {
         )
       )
     `);
+    try { this.pruneVisitorHistory(); } catch { /* Retention cleanup is best-effort during startup. */ }
     this.recordStatsTransaction = db.transaction((entries, visitors) => {
       for (const [siteId, values] of entries) {
         this.writeTotalStats.run(siteId, values.requests, values.bytes, values.errors, values.responseMs);
@@ -119,8 +122,11 @@ class CoreSiteManager {
     this.healthTimer = setInterval(() => this.runHealthChecks(), 5000);
     this.healthTimer.unref?.();
     this.statsTimer = setInterval(() => {
-      try { this.flushStats(); }
-      catch (error) { this.log(null, 'error', `Could not flush request statistics: ${error.message}`); }
+      try {
+        this.flushStats();
+        this.statsFlushCount += 1;
+        if (this.statsFlushCount % 100 === 0) this.pruneVisitorHistory();
+      } catch (error) { this.log(null, 'error', `Could not flush request statistics: ${error.message}`); }
     }, STATS_FLUSH_INTERVAL_MS);
     this.statsTimer.unref?.();
     this.firewallTimer = setInterval(() => {
@@ -280,7 +286,7 @@ class CoreSiteManager {
     return hydrateSite(this.db.prepare('SELECT * FROM sites WHERE id = ?').get(id));
   }
 
-  statusFor(id) {
+  statusFor(id, knownSite = null) {
     const numericId = Number(id);
     const runtime = this.running.get(numericId);
     const health = this.healthState.get(numericId) || null;
@@ -295,13 +301,13 @@ class CoreSiteManager {
       restarts: recentRestarts.length,
       connections: runtime?.server?._connections || 0,
       webSockets: runtime?.webSockets?.size || 0,
-      isolation: runtime?.isolation || siteIsolation(this.getSite(numericId)),
+      isolation: runtime?.isolation || siteIsolation(knownSite || this.getSite(numericId)),
       anubis: Boolean(this.operations?.anubisTarget(numericId))
     };
   }
 
   decorate(site) {
-    const runtime = this.statusFor(site.id);
+    const runtime = this.statusFor(site.id, site);
     const protocol = runtime.protocol || (site.ssl_enabled ? 'https' : 'http');
     const host = hostForUrl(site.domain || (['0.0.0.0', '::'].includes(site.bind_host) ? 'localhost' : site.bind_host));
     const { EDGE_HTTP_PORT, EDGE_HTTPS_PORT } = require('./config');
@@ -329,6 +335,31 @@ class CoreSiteManager {
     this.firewallCache.delete(Number(siteId));
   }
 
+  refreshLiveFirewall(siteId) {
+    const numericId = Number(siteId);
+    const latest = this.getSite(numericId);
+    if (!latest) return null;
+    const runtime = this.running.get(numericId);
+    if (runtime?.site) {
+      runtime.site.firewall_enabled = latest.firewall_enabled;
+      runtime.site.firewall = latest.firewall;
+    }
+    this.firewallCache.delete(numericId);
+    return latest;
+  }
+
+  setPrivacyMode(mode) {
+    const normalized = ['none', 'mask', 'hash'].includes(String(mode)) ? String(mode) : 'none';
+    this.privacyCache = { mode: normalized, loadedAt: Date.now() };
+    return normalized;
+  }
+
+  pruneVisitorHistory() {
+    const retention = `-${VISITOR_RETENTION_DAYS} days`;
+    this.pruneExpiredVisitorStats.run(retention);
+    for (const { siteId } of this.visitorSitesForPrune.all()) this.pruneVisitorStats.run(siteId, retention, siteId);
+  }
+
   privacyMode() {
     if (Date.now() - this.privacyCache.loadedAt > 60_000) {
       this.privacyCache = { mode: this.db.prepare("SELECT value FROM settings WHERE key = 'visitor_privacy_mode'").get()?.value || 'none', loadedAt: Date.now() };
@@ -340,9 +371,7 @@ class CoreSiteManager {
     const mode = this.privacyMode();
     if (mode === 'none' || identity.ip === 'unknown') return identity;
     if (mode === 'hash') return { ...identity, ip: `anon-${crypto.createHmac('sha256', JWT_SECRET).update(identity.ip).digest('base64url').slice(0, 16)}` };
-    if (net.isIP(identity.ip) === 4) return { ...identity, ip: identity.ip.replace(/\d+$/, '0') + '/24' };
-    if (net.isIP(identity.ip) === 6) return { ...identity, ip: `${identity.ip.split(':').slice(0, 3).join(':')}::/48` };
-    return identity;
+    return { ...identity, ip: maskIp(identity.ip) };
   }
 
   queueStats(siteId, identity, bytes, errors, responseMs) {
@@ -377,11 +406,6 @@ class CoreSiteManager {
     this.pendingVisitors.clear();
     try {
       this.recordStatsTransaction(entries, visitors);
-      this.statsFlushCount += 1;
-      if (this.statsFlushCount % 100 === 0) {
-        const retention = `-${VISITOR_RETENTION_DAYS} days`;
-        for (const siteId of new Set(visitors.map((item) => item.siteId))) this.pruneVisitorStats.run(siteId, retention, siteId);
-      }
     } catch (error) {
       for (const [siteId, values] of entries) {
         const current = this.pendingStats.get(siteId) || { requests: 0, bytes: 0, errors: 0, responseMs: 0 };
@@ -433,14 +457,14 @@ class CoreSiteManager {
   }
 
   compiledFirewall(site) {
-    const key = JSON.stringify(site.firewall || {});
+    const source = site.firewall || {};
     const cached = this.firewallCache.get(site.id);
-    if (cached?.key === key) return cached.value;
+    if (cached?.source === source) return cached.value;
     const value = {
-      blocked: buildIpBlockList(site.firewall.blockedIps),
-      allowed: buildIpBlockList(site.firewall.allowedIps)
+      blocked: buildIpBlockList(source.blockedIps),
+      allowed: buildIpBlockList(source.allowedIps)
     };
-    this.firewallCache.set(site.id, { key, value });
+    this.firewallCache.set(site.id, { source, value });
     return value;
   }
 
@@ -516,7 +540,7 @@ class CoreSiteManager {
     if (firewall.blockedCountries.includes(identity.country)) {
       return { allowed: false, status: 403, message: 'Request blocked by the site firewall.', identity };
     }
-    if (firewall.blockBots && /(?:bot|crawler|spider|scraper|headless|curl|wget)/i.test(String(req.headers['user-agent'] || ''))) {
+    if (firewall.blockBots && ['llm', 'search', 'crawler'].includes(identity.clientType)) {
       return { allowed: false, status: 403, message: 'Automated client blocked by the site firewall.', identity };
     }
     if (firewall.rateLimitPerMinute > 0) {
@@ -544,16 +568,33 @@ class CoreSiteManager {
     return { allowed: true, identity };
   }
 
+  guardWebSocket(site, req, socket) {
+    const reject = (status, headers = {}) => {
+      const reason = ({ 301: 'Moved Permanently', 302: 'Found', 307: 'Temporary Redirect', 308: 'Permanent Redirect', 403: 'Forbidden', 413: 'Payload Too Large', 421: 'Misdirected Request', 429: 'Too Many Requests', 503: 'Service Unavailable' })[status] || 'Request Rejected';
+      const lines = [`HTTP/1.1 ${status} ${reason}`, 'Connection: close', 'Content-Length: 0'];
+      for (const [name, value] of Object.entries(headers)) lines.push(`${name}: ${String(value).replace(/[\r\n]/g, '')}`);
+      socket.end(`${lines.join('\r\n')}\r\n\r\n`);
+      return false;
+    };
+    const access = this.checkAccess(site, req);
+    if (!access.allowed) return reject(access.status || 403, access.retryAfter ? { 'Retry-After': access.retryAfter } : {});
+    const redirect = this.matchingRedirect(site, req);
+    if (redirect) return reject(redirect.status, { Location: redirect.target });
+    if (site.maintenance_enabled && !/^SHAM-Health\//.test(String(req.headers['user-agent'] || ''))) return reject(503, { 'Retry-After': 300 });
+    return true;
+  }
+
   guardRequest(site, req, res) {
-    if (!this.operationalGuard(site, req, res)) return false;
     const result = this.checkAccess(site, req);
-    if (result.allowed) return true;
-    if (result.retryAfter) res.setHeader('Retry-After', String(result.retryAfter));
-    res.statusCode = result.status;
-    const page = this.errorPage(site, result.status, result.message);
-    res.setHeader('Content-Type', page.type);
-    res.end(page.body);
-    return false;
+    if (!result.allowed) {
+      if (result.retryAfter) res.setHeader('Retry-After', String(result.retryAfter));
+      res.statusCode = result.status;
+      const page = this.errorPage(site, result.status, result.message);
+      res.setHeader('Content-Type', page.type);
+      res.end(page.body);
+      return false;
+    }
+    return this.operationalGuard(site, req, res);
   }
 
 }

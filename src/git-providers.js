@@ -88,6 +88,7 @@ async function listProviderRepositories(db, provider) {
     signal: AbortSignal.timeout(15_000)
   });
   if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
     const retry = response.status === 401 || response.status === 403 ? ' Check the saved token and its repository-read permissions.' : '';
     throw new Error(`${definition.label} repository lookup failed with HTTP ${response.status}.${retry}`);
   }
@@ -108,7 +109,10 @@ function repositoryPath(repositoryUrl, provider) {
   let parsed;
   try { parsed = new URL(String(repositoryUrl || '')); } catch { throw new Error('Repository URL is invalid.'); }
   if (parsed.protocol !== 'https:' || parsed.hostname.toLowerCase() !== definition.host) throw new Error(`Repository URL is not hosted on ${definition.label}.`);
-  const pathname = decodeURIComponent(parsed.pathname).replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
+  let decodedPath;
+  try { decodedPath = decodeURIComponent(parsed.pathname); }
+  catch { throw new Error(`${definition.label} repository path contains invalid URL encoding.`); }
+  const pathname = decodedPath.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
   if (!pathname || pathname.split('/').some((part) => !part || part === '.' || part === '..')) throw new Error(`${definition.label} repository path is invalid.`);
   return pathname;
 }
@@ -117,7 +121,9 @@ function providerCommitUrl(repositoryUrl, commitSha) {
   const provider = providerForRepositoryUrl(repositoryUrl);
   const sha = String(commitSha || '').trim();
   if (!provider || !/^[0-9a-f]{7,64}$/i.test(sha)) return '';
-  const pathname = repositoryPath(repositoryUrl, provider).split('/').map(encodeURIComponent).join('/');
+  let pathname;
+  try { pathname = repositoryPath(repositoryUrl, provider).split('/').map(encodeURIComponent).join('/'); }
+  catch { return ''; }
   return provider === 'github'
     ? `https://github.com/${pathname}/commit/${encodeURIComponent(sha)}`
     : `https://gitlab.com/${pathname}/-/commit/${encodeURIComponent(sha)}`;
@@ -143,10 +149,14 @@ async function providerRequest(definition, token, url, options = {}) {
     signal: AbortSignal.timeout(15_000)
   });
   if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
     const permission = [401, 403, 404].includes(response.status) ? ` Check the saved ${definition.label} token and its repository/webhook permissions.` : '';
     throw new Error(`${definition.label} webhook configuration failed with HTTP ${response.status}.${permission}`);
   }
-  if (response.status === 204) return null;
+  if (response.status === 204) {
+    await response.body?.cancel().catch(() => {});
+    return null;
+  }
   return response.json().catch(() => null);
 }
 

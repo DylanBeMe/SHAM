@@ -14,13 +14,35 @@ function listen(server, port, host) {
     server.listen(port, host, () => { server.off('error', reject); resolve(); });
   });
 }
-function close(server) { return new Promise((resolve) => server?.listening ? server.close(() => resolve()) : resolve()); }
+function close(server) {
+  return new Promise((resolve) => {
+    if (!server?.listening) return resolve();
+    let settled = false;
+    let timer;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+    server.close(finish);
+    timer = setTimeout(() => {
+      for (const socket of server._shamSockets || []) socket.destroy();
+      server.closeAllConnections?.();
+      finish();
+    }, 3000);
+    timer.unref?.();
+  });
+}
 
 function hardenServer(server) {
   server.requestTimeout = HTTP_REQUEST_TIMEOUT_MS;
   server.headersTimeout = Math.min(60_000, HTTP_REQUEST_TIMEOUT_MS);
   server.keepAliveTimeout = 5_000;
   server.maxHeadersCount = 100;
+  const sockets = new Set();
+  Object.defineProperty(server, '_shamSockets', { value: sockets, enumerable: false });
+  server.on('connection', (socket) => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   server.on('clientError', (_error, socket) => {
     if (socket.writable) socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
     else socket.destroy();
@@ -35,30 +57,46 @@ class EdgeProxy {
     this.httpServer = null;
     this.operations = null;
     this.httpsServer = null;
+    this.siteCache = new Map();
+    this.tlsContextCache = new Map();
+    this.tlsDomainCache = new Map();
+    this.findEdgeSite = db.prepare("SELECT * FROM sites WHERE lower(domain) = lower(?) AND edge_enabled = 1 AND enabled = 1 LIMIT 1");
+    this.findTlsSite = db.prepare("SELECT domain FROM sites WHERE lower(domain) = lower(?) AND edge_enabled = 1 AND ssl_enabled = 1 AND enabled = 1 LIMIT 1");
+    this.findDefaultTlsDomain = db.prepare("SELECT domain FROM sites WHERE edge_enabled = 1 AND ssl_enabled = 1 AND enabled = 1 AND domain != '' ORDER BY id LIMIT 1");
     this.proxy = httpProxy.createProxyServer({ ws: true, xfwd: true, changeOrigin: false, secure: false, timeout: HTTP_REQUEST_TIMEOUT_MS, proxyTimeout: HTTP_REQUEST_TIMEOUT_MS });
     this.proxy.on('error', (_error, _req, target) => {
       if (typeof target?.writeHead === 'function') {
-        if (!target.headersSent) target.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+        if (target.headersSent) return target.destroy?.();
+        target.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
         target.end('Hosted site is unavailable.');
       } else target?.destroy?.();
     });
   }
 
   setOperations(operations) { this.operations = operations; }
+  invalidateSiteCache() { this.siteCache.clear(); this.tlsDomainCache.clear(); }
 
   enabled() { return EDGE_HTTP_PORT > 0 || EDGE_HTTPS_PORT > 0; }
   siteFor(req) {
     const host = requestHostname(req);
     if (!host) return null;
     const preview = this.operations?.previewForHostname(host);
-    if (preview) return { preview: true, ...preview };
-    return this.db.prepare("SELECT * FROM sites WHERE lower(domain) = lower(?) AND edge_enabled = 1 AND enabled = 1 LIMIT 1").get(host);
+    if (preview) return preview;
+    const key = host.toLowerCase();
+    const now = Date.now();
+    const cached = this.siteCache.get(key);
+    if (cached && cached.expiresAt > now) return cached.site;
+    const site = this.findEdgeSite.get(host) || null;
+    this.siteCache.delete(key);
+    this.siteCache.set(key, { site, expiresAt: now + 1000 });
+    if (this.siteCache.size > 1024) this.siteCache.delete(this.siteCache.keys().next().value);
+    return site;
   }
   target(site) {
     if (site?.preview) return site.target;
     const protectedTarget = this.operations?.anubisTarget(site.id);
     if (protectedTarget) return protectedTarget;
-    const status = this.manager.statusFor(site.id);
+    const status = this.manager.statusFor(site.id, site);
     if (!status.running) return null;
     const host = ['0.0.0.0', '::', 'localhost'].includes(site.bind_host) ? '127.0.0.1' : site.bind_host;
     return `${status.protocol || (site.ssl_enabled ? 'https' : 'http')}://${host.includes(':') ? `[${host}]` : host}:${site.port}`;
@@ -92,20 +130,34 @@ class EdgeProxy {
     this.proxy.ws(req, socket, head, { target });
   }
   secureContext(domain) {
-    if (!domain || !hasCertificate(domain)) return null;
-    const cert = certbotPaths(domain);
-    return tls.createSecureContext({ key: fs.readFileSync(cert.key), cert: fs.readFileSync(cert.cert) });
+    const key = String(domain || '').trim().toLowerCase();
+    if (!key || !hasCertificate(key)) return null;
+    const cached = this.tlsContextCache.get(key);
+    if (cached) return cached;
+    const cert = certbotPaths(key);
+    const context = tls.createSecureContext({ key: fs.readFileSync(cert.key), cert: fs.readFileSync(cert.cert) });
+    this.tlsContextCache.set(key, context);
+    if (this.tlsContextCache.size > 256) this.tlsContextCache.delete(this.tlsContextCache.keys().next().value);
+    return context;
   }
   defaultTlsOptions() {
-    const row = this.db.prepare("SELECT domain FROM sites WHERE edge_enabled = 1 AND ssl_enabled = 1 AND enabled = 1 AND domain != '' ORDER BY id LIMIT 1").get();
+    const row = this.findDefaultTlsDomain.get();
     if (!row || !hasCertificate(row.domain)) return null;
     const cert = certbotPaths(row.domain);
     return {
       key: fs.readFileSync(cert.key), cert: fs.readFileSync(cert.cert),
       SNICallback: (servername, callback) => {
         try {
-          const site = this.db.prepare("SELECT domain FROM sites WHERE lower(domain) = lower(?) AND edge_enabled = 1 AND ssl_enabled = 1 AND enabled = 1").get(servername);
-          const context = this.secureContext(site?.domain || row.domain);
+          const key = String(servername || '').toLowerCase();
+          const now = Date.now();
+          let cached = this.tlsDomainCache.get(key);
+          if (!cached || cached.expiresAt <= now) {
+            cached = { domain: this.findTlsSite.get(servername)?.domain || '', expiresAt: now + 1000 };
+            this.tlsDomainCache.delete(key);
+            this.tlsDomainCache.set(key, cached);
+            if (this.tlsDomainCache.size > 512) this.tlsDomainCache.delete(this.tlsDomainCache.keys().next().value);
+          }
+          const context = this.secureContext(cached.domain || row.domain);
           callback(null, context);
         } catch (error) { callback(error); }
       }
@@ -135,7 +187,6 @@ class EdgeProxy {
     const wasRunning = Boolean(this.httpServer?.listening);
     const server = this.httpServer;
     this.httpServer = null;
-    this.operations = null;
     await close(server);
     return wasRunning;
   }
@@ -168,6 +219,8 @@ class EdgeProxy {
 
   async reloadTls() {
     if (EDGE_HTTPS_PORT <= 0) return;
+    this.tlsContextCache.clear();
+    this.tlsDomainCache.clear();
     await close(this.httpsServer);
     this.httpsServer = null;
     const options = this.defaultTlsOptions();
@@ -183,6 +236,9 @@ class EdgeProxy {
     this.httpServer = null;
     this.operations = null;
     this.httpsServer = null;
+    this.siteCache.clear();
+    this.tlsContextCache.clear();
+    this.tlsDomainCache.clear();
     await Promise.allSettled([close(httpServer), close(httpsServer)]);
     this.proxy.close();
   }

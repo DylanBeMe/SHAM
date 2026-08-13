@@ -6,7 +6,7 @@ function registerOperationsRoutes(ctx) {
   const {
     app, requireAuth, requireAdmin, webhookLimiter, serializeSiteMutation, db, crypto, DEPLOY_WEBHOOK_DUMMY_SECRET,
     operationsManager, manager, recordAudit, getSiteOr404, bool, validateSiteInput, uniqueSlug, writeSiteConfig,
-    getSecretSetting, setSecretSetting, getSetting, setSetting, cloudflareTunnels, legacyCloudflareTunnel, updateManager, verifyPassword,
+    getSecretSetting, setSecretSetting, getSetting, setSetting, cloudflareTunnels, legacyCloudflareTunnel, updateManager, verifyPassword, stepUpLimiter,
     multipart, updateUpload, cleanupUploadedFiles
   } = ctx;
 
@@ -91,7 +91,7 @@ function authenticateDeployWebhook(req, res, next) {
   });
 
 
-  app.post('/api/sites/:id/environment/:key/reveal', requireAuth, requireAdmin, async (req, res) => {
+  app.post('/api/sites/:id/environment/:key/reveal', requireAuth, requireAdmin, stepUpLimiter, async (req, res) => {
     const site = getSiteOr404(req, res);
     if (!site) return;
     try {
@@ -146,7 +146,7 @@ function authenticateDeployWebhook(req, res, next) {
   app.post('/api/sites/:id/jobs/:jobId/run', requireAuth, requireAdmin, async (req, res) => {
     const site = getSiteOr404(req, res);
     if (!site) return;
-    try { const result = await operationsManager.runJob(Number(req.params.jobId), 'manual'); recordAudit(req.user.id, 'site.job.run', { siteId: site.id, jobId: Number(req.params.jobId) }); res.json(result); }
+    try { const result = await operationsManager.runJob(Number(req.params.jobId), 'manual', site.id); recordAudit(req.user.id, 'site.job.run', { siteId: site.id, jobId: Number(req.params.jobId) }); res.json(result); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
 
@@ -167,15 +167,16 @@ function authenticateDeployWebhook(req, res, next) {
       let webhookWarning = null;
       try { webhook = await operationsManager.configureProviderWebhook(manager.getSite(site.id), getSetting('git_webhook_base_url', '')); }
       catch (error) { webhookWarning = error.message; manager.log(site.id, 'error', `Git provider webhook configuration failed: ${error.message}`); }
-      recordAudit(req.user.id, 'site.git.deploy', { siteId: site.id, releaseId: release.id, branch: req.body.branch || site.git_branch, webhook: webhook?.action || null });
-      res.json({ release, site: manager.decorate(manager.getSite(site.id)), webhook, warning: webhookWarning });
+      const warning = [release.warning, webhookWarning].filter(Boolean).join(' ') || null;
+      recordAudit(req.user.id, 'site.git.deploy', { siteId: site.id, releaseId: release.id, branch: req.body.branch || site.git_branch, webhook: webhook?.action || null, warning: Boolean(warning) });
+      res.json({ release, site: manager.decorate(manager.getSite(site.id)), webhook, warning });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
   app.post('/api/sites/:id/releases/:releaseId/rollback', requireAuth, requireAdmin, async (req, res) => {
     const site = getSiteOr404(req, res);
     if (!site) return;
-    try { const releases = await operationsManager.rollbackRelease(site, Number(req.params.releaseId)); recordAudit(req.user.id, 'site.release.rollback', { siteId: site.id, releaseId: Number(req.params.releaseId) }); res.json({ releases, deployments: operationsManager.listDeployments(site.id, 50) }); }
+    try { const result = await operationsManager.rollbackRelease(site, Number(req.params.releaseId)); recordAudit(req.user.id, 'site.release.rollback', { siteId: site.id, releaseId: Number(req.params.releaseId), warning: Boolean(result.warning) }); res.json({ releases: result.releases, deployments: operationsManager.listDeployments(site.id, 50), warning: result.warning }); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
 
@@ -189,7 +190,7 @@ function authenticateDeployWebhook(req, res, next) {
   app.delete('/api/sites/:id/previews/:previewId', requireAuth, requireAdmin, async (req, res) => {
     const site = getSiteOr404(req, res);
     if (!site) return;
-    try { await operationsManager.deletePreview(Number(req.params.previewId)); recordAudit(req.user.id, 'site.preview.delete', { siteId: site.id, previewId: Number(req.params.previewId) }); res.status(204).end(); }
+    try { await operationsManager.deletePreview(Number(req.params.previewId), site.id); recordAudit(req.user.id, 'site.preview.delete', { siteId: site.id, previewId: Number(req.params.previewId) }); res.status(204).end(); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
 
@@ -374,19 +375,30 @@ function authenticateDeployWebhook(req, res, next) {
       const nextPrometheusToken = clearPrometheusToken ? '' : incomingPrometheusToken || getSecretSetting(db, 'prometheus_token', '');
       if (prometheusEnabled && !nextPrometheusToken) throw new Error('Set a metrics token before enabling the Prometheus endpoint.');
 
-      const otelEndpoint = has('otelEndpoint') ? String(body.otelEndpoint || '').trim() : null;
+      let otelEndpoint = has('otelEndpoint') ? String(body.otelEndpoint || '').trim() : null;
       if (otelEndpoint !== null && otelEndpoint.length > 2048) throw new Error('OpenTelemetry endpoint is too long.');
       if (otelEndpoint) {
         let parsedEndpoint;
         try { parsedEndpoint = new URL(otelEndpoint); } catch { throw new Error('OpenTelemetry endpoint must be a valid HTTP or HTTPS URL.'); }
-        if (!['http:', 'https:'].includes(parsedEndpoint.protocol)) throw new Error('OpenTelemetry endpoint must be a valid HTTP or HTTPS URL.');
+        if (!['http:', 'https:'].includes(parsedEndpoint.protocol) || parsedEndpoint.username || parsedEndpoint.password || parsedEndpoint.search || parsedEndpoint.hash) throw new Error('OpenTelemetry endpoint must use HTTP or HTTPS without credentials, query parameters, or fragments.');
+        otelEndpoint = parsedEndpoint.toString();
       }
       const clearOtelHeaders = bool(body.clearOtelHeaders, false);
       let serializedOtelHeaders = null;
       if (has('otelHeaders')) {
         if (!body.otelHeaders || typeof body.otelHeaders !== 'object' || Array.isArray(body.otelHeaders)) throw new Error('OpenTelemetry headers must be a JSON object.');
-        serializedOtelHeaders = JSON.stringify(body.otelHeaders);
-        if (serializedOtelHeaders.length > 64 * 1024 || serializedOtelHeaders.includes('\0')) throw new Error('OpenTelemetry headers are too large or invalid.');
+        const entries = Object.entries(body.otelHeaders);
+        if (entries.length > 50) throw new Error('OpenTelemetry can define at most 50 headers.');
+        const headers = {};
+        const forbiddenHeaders = new Set(['connection', 'content-length', 'host', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
+        for (const [rawName, rawValue] of entries) {
+          const name = String(rawName || '').trim();
+          const value = String(rawValue ?? '');
+          if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,200}$/.test(name) || forbiddenHeaders.has(name.toLowerCase()) || /[\0\r\n]/.test(value) || value.length > 4096) throw new Error('OpenTelemetry contains an invalid or unsafe header.');
+          headers[name] = value;
+        }
+        serializedOtelHeaders = JSON.stringify(headers);
+        if (serializedOtelHeaders.length > 64 * 1024) throw new Error('OpenTelemetry headers are too large.');
       }
       if (clearOtelHeaders && serializedOtelHeaders && serializedOtelHeaders !== '{}') throw new Error('Choose either new OpenTelemetry headers or clear the saved headers.');
 

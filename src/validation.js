@@ -245,7 +245,9 @@ function validateProxyHostHeader(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
   if (raw.length > 253 || /[\r\n\0\s/]/.test(raw)) throw new Error('Proxy host-header override is invalid.');
-  const parsed = new URL(`http://${raw}`);
+  let parsed;
+  try { parsed = new URL(`http://${raw}`); }
+  catch { throw new Error('Proxy host-header override must be a hostname with an optional port.'); }
   if (!parsed.hostname || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw new Error('Proxy host-header override must be a hostname with an optional port.');
   return parsed.host;
 }

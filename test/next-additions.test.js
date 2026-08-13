@@ -38,7 +38,7 @@ test('deployment lifecycle, attached logs, active release restoration, and secre
   const operationsRoutes = read('src/routes/operations.js');
   assert.match(db, /ensureColumn\('runtime_logs', 'deployment_id', 'INTEGER'\)/);
   assert.match(db, /idx_runtime_logs_deployment/);
-  assert.match(core, /site_deployments WHERE status = 'running'/);
+  assert.match(core, /site_deployments WHERE status IN \('running', 'deployed-with-warning'\)/);
   assert.match(core, /deploymentId/);
   for (const status of ['queued', 'building', 'running', 'failed', 'rolled-back', 'superseded']) assert.match(deployments, new RegExp(`['\"]${status}['\"]`));
   assert.match(deployments, /deploymentLogs\(siteId, deploymentId/);

@@ -68,10 +68,11 @@ function terminateAndWait(child, graceMs = 2000) {
   });
 }
 
-function runProcess(command, args, { cwd, env, timeoutMs = 60_000, onLine = () => {}, stdin = null, environmentMode = 'operator' } = {}) {
+function runProcess(command, args, { cwd, env, timeoutMs = 60_000, onLine = () => {}, onSpawn = () => {}, stdin = null, environmentMode = 'operator' } = {}) {
   return new Promise((resolve, reject) => {
     const environment = environmentMode === 'runtime' ? runtimeEnvironment(env) : environmentMode === 'build' ? buildEnvironment(env) : operatorEnvironment(env);
     const child = spawn(command, args, processOptions({ cwd, env: environment, stdio: ['pipe', 'pipe', 'pipe'] }));
+    onSpawn(child);
     let output = '';
     let settled = false;
     let timedOut = false;
@@ -135,7 +136,7 @@ function parseField(field, minimum, maximum) {
     if (rangeRaw !== '*') {
       const [startRaw, endRaw] = rangeRaw.split('-');
       start = Number(startRaw);
-      end = endRaw === undefined ? start : Number(endRaw);
+      end = endRaw === undefined ? (stepRaw === undefined ? start : maximum) : Number(endRaw);
     }
     if (!Number.isInteger(start) || !Number.isInteger(end) || start < minimum || end > maximum || start > end) throw new Error('Invalid cron range.');
     for (let value = start; value <= end; value += step) values.add(value);
@@ -146,19 +147,20 @@ function parseField(field, minimum, maximum) {
 function parseCron(expression) {
   const parts = String(expression || '').trim().split(/\s+/);
   if (parts.length !== 5) throw new Error('Schedule must contain five cron fields: minute hour day month weekday.');
+  const weekdays = parseField(parts[4], 0, 7);
+  if (weekdays.delete(7)) weekdays.add(0);
   return {
     minutes: parseField(parts[0], 0, 59),
     hours: parseField(parts[1], 0, 23),
     days: parseField(parts[2], 1, 31),
     months: parseField(parts[3], 1, 12),
-    weekdays: parseField(parts[4], 0, 6),
+    weekdays,
     dayWildcard: parts[2] === '*',
     weekdayWildcard: parts[4] === '*'
   };
 }
 
-function cronMatches(expression, date) {
-  const schedule = parseCron(expression);
+function cronScheduleMatches(schedule, date) {
   const dayMatches = schedule.days.has(date.getDate());
   const weekdayMatches = schedule.weekdays.has(date.getDay());
   const calendarMatches = schedule.dayWildcard && schedule.weekdayWildcard
@@ -174,13 +176,17 @@ function cronMatches(expression, date) {
     && calendarMatches;
 }
 
+function cronMatches(expression, date) {
+  return cronScheduleMatches(parseCron(expression), date);
+}
+
 function nextCronDate(expression, after = new Date()) {
-  parseCron(expression);
+  const schedule = parseCron(expression);
   const candidate = new Date(after.getTime());
   candidate.setSeconds(0, 0);
   candidate.setMinutes(candidate.getMinutes() + 1);
   for (let index = 0; index < 366 * 24 * 60; index += 1) {
-    if (cronMatches(expression, candidate)) return candidate;
+    if (cronScheduleMatches(schedule, candidate)) return candidate;
     candidate.setMinutes(candidate.getMinutes() + 1);
   }
   throw new Error('Schedule does not produce a run within one year.');
@@ -217,8 +223,17 @@ function freePort() {
 function closeServer(server) {
   return new Promise((resolve) => {
     if (!server?.listening) return resolve();
-    server.close(() => resolve());
-    setTimeout(() => { server.closeAllConnections?.(); resolve(); }, 3000).unref?.();
+    let settled = false;
+    let timer;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve();
+    };
+    server.close(finish);
+    timer = setTimeout(() => { server.closeAllConnections?.(); finish(); }, 3000);
+    timer.unref?.();
   });
 }
 
@@ -253,9 +268,12 @@ function validateGitUrl(value) {
   let parsed;
   try { parsed = new URL(url); } catch { throw new Error('Git repository URL is invalid.'); }
   if (!parsed.hostname) throw new Error('Git repository URL must include a host.');
-  if (parsed.password || (/^https?:$/i.test(parsed.protocol) && parsed.username)) {
-    throw new Error('Git credentials must not be embedded in the repository URL. Use a deploy key or external credential helper.');
+  if (parsed.password || (/^https?:$/i.test(parsed.protocol) && parsed.username) || parsed.search) {
+    throw new Error('Git credentials must not be embedded in the repository URL, and query parameters are not allowed. Use a deploy key or connected provider credential.');
   }
+  if (parsed.hash) throw new Error('Git repository URL must not include a fragment.');
+  try { decodeURIComponent(parsed.pathname); }
+  catch { throw new Error('Git repository URL contains invalid URL encoding.'); }
   return url;
 }
 

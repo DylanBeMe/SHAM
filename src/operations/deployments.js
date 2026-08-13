@@ -18,19 +18,21 @@ class DeploymentOperations extends ConfigurationOperations {
   async cloneRepository(site, { url, branch, deployKey = '', installDependencies = false, installCommand = '', buildCommand = '', buildOutputDir = '', deploymentId = null }) {
     const repository = validateGitUrl(url);
     const ref = validateBranch(branch);
+    const privateKey = String(deployKey || '');
+    if (privateKey.length > 128 * 1024 || privateKey.includes('\0')) throw new Error('Deploy key is too large or invalid.');
     let stage = path.join(SITES_DIR, `${site.directory_name}.git-${crypto.randomUUID()}`);
     const environment = this.siteEnvironment(site.id, 'build');
     let keyPath = '';
     try {
-      if (!deployKey) applyGitProviderCredentials(this.db, repository, environment);
-      if (deployKey) {
+      if (!privateKey) applyGitProviderCredentials(this.db, repository, environment);
+      if (privateKey) {
         keyPath = path.join(DATA_DIR, 'tmp', `git-key-${crypto.randomUUID()}`);
-        await fs.promises.writeFile(keyPath, deployKey, { mode: 0o600 });
+        await fs.promises.writeFile(keyPath, privateKey, { mode: 0o600 });
         environment.GIT_SSH_COMMAND = `ssh -i ${JSON.stringify(keyPath)} -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`;
       }
-      await runProcess(GIT_BIN, ['clone', '--depth', '1', '--branch', ref, '--single-branch', '--', repository, stage], { timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `git: ${line}`, { deploymentId }) });
-      const commitSha = (await runProcess(GIT_BIN, ['rev-parse', 'HEAD'], { cwd: stage, timeoutMs: 30_000, env: environment, environmentMode: 'build' })).output.trim();
-      const metadata = (await runProcess(GIT_BIN, ['log', '-1', '--format=%an%x00%s'], { cwd: stage, timeoutMs: 30_000, env: environment, environmentMode: 'build' })).output.split('\0');
+      await runProcess(GIT_BIN, ['clone', '--depth', '1', '--branch', ref, '--single-branch', '--', repository, stage], this.trackedProcessOptions({ timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `git: ${line}`, { deploymentId }) }));
+      const commitSha = (await runProcess(GIT_BIN, ['rev-parse', 'HEAD'], this.trackedProcessOptions({ cwd: stage, timeoutMs: 30_000, env: environment, environmentMode: 'build' }))).output.trim();
+      const metadata = (await runProcess(GIT_BIN, ['log', '-1', '--format=%an%x00%s'], this.trackedProcessOptions({ cwd: stage, timeoutMs: 30_000, env: environment, environmentMode: 'build' }))).output.split('\0');
       const commitAuthor = String(metadata[0] || '').trim().slice(0, 200);
       const commitMessage = String(metadata.slice(1).join(' ').trim() || '').slice(0, 500);
       await fs.promises.rm(path.join(stage, '.git'), { recursive: true, force: true });
@@ -39,13 +41,13 @@ class DeploymentOperations extends ConfigurationOperations {
       const configuredBuild = String(buildCommand || site.build_command || '').trim();
       const outputDirectory = String(buildOutputDir || site.build_output_dir || '').trim();
       if (configuredInstall) {
-        await runConfiguredCommand(configuredInstall, { cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `install: ${line}`, { deploymentId }) });
+        await runConfiguredCommand(configuredInstall, this.trackedProcessOptions({ cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `install: ${line}`, { deploymentId }) }));
       } else if (installDependencies && site.runtime_type === 'node') {
         const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-        await runProcess(npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], { cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `npm: ${line}`, { deploymentId }) });
+        await runProcess(npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], this.trackedProcessOptions({ cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `npm: ${line}`, { deploymentId }) }));
       }
       if (configuredBuild) {
-        await runConfiguredCommand(configuredBuild, { cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `build: ${line}`, { deploymentId }) });
+        await runConfiguredCommand(configuredBuild, this.trackedProcessOptions({ cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `build: ${line}`, { deploymentId }) }));
       }
       if (outputDirectory) {
         const output = path.join(stage, ...safeRelativePath(outputDirectory, 'Build output directory').split('/'));
@@ -114,9 +116,18 @@ class DeploymentOperations extends ConfigurationOperations {
 
   updateDeploymentStatus(id, status, detail = null) {
     const normalized = String(status || '').trim().toLowerCase();
+    const activeStatuses = new Set(['running', 'deployed-with-warning']);
     if (!['queued', 'building', 'running', 'failed', 'rolled-back', 'superseded', 'deployed-with-warning', 'success'].includes(normalized)) throw new Error('Deployment status is invalid.');
-    if (detail === null) this.db.prepare('UPDATE site_deployments SET status = ? WHERE id = ?').run(normalized, Number(id));
-    else this.db.prepare('UPDATE site_deployments SET status = ?, detail = ? WHERE id = ?').run(normalized, String(detail).slice(0, 4000), Number(id));
+    const row = this.db.prepare('SELECT site_id AS siteId FROM site_deployments WHERE id = ?').get(Number(id));
+    const transaction = this.db.transaction(() => {
+      if (activeStatuses.has(normalized) && row?.siteId) {
+        this.db.prepare("UPDATE site_deployments SET status = 'superseded' WHERE site_id = ? AND id != ? AND status IN ('running', 'deployed-with-warning')").run(row.siteId, Number(id));
+      }
+      if (detail === null) this.db.prepare('UPDATE site_deployments SET status = ? WHERE id = ?').run(normalized, Number(id));
+      else this.db.prepare('UPDATE site_deployments SET status = ?, detail = ? WHERE id = ?').run(normalized, String(detail).slice(0, 4000), Number(id));
+    });
+    transaction();
+    if (activeStatuses.has(normalized) && row?.siteId) this.manager.activeDeploymentIds?.set(Number(row.siteId), Number(id));
   }
 
   finishDeployment(id, status, detail = '', metadata = {}) {
@@ -124,14 +135,15 @@ class DeploymentOperations extends ConfigurationOperations {
     const started = row?.startedAt ? Date.parse(`${String(row.startedAt).replace(' ', 'T')}Z`) : Date.now();
     const duration = Math.max(0, Date.now() - (Number.isFinite(started) ? started : Date.now()));
     const normalizedStatus = String(status || 'failed').slice(0, 30);
+    const activeStatuses = new Set(['running', 'deployed-with-warning']);
     const transaction = this.db.transaction(() => {
-      if (normalizedStatus === 'running' && row?.siteId) this.db.prepare("UPDATE site_deployments SET status = 'superseded' WHERE site_id = ? AND id != ? AND status = 'running'").run(row.siteId, Number(id));
+      if (activeStatuses.has(normalizedStatus) && row?.siteId) this.db.prepare("UPDATE site_deployments SET status = 'superseded' WHERE site_id = ? AND id != ? AND status IN ('running', 'deployed-with-warning')").run(row.siteId, Number(id));
       this.db.prepare(`UPDATE site_deployments SET status = ?, commit_sha = ?, commit_author = ?, commit_message = ?, detail = ?, duration_ms = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?`).run(
         normalizedStatus, String(metadata.commitSha || '').slice(0, 100), String(metadata.commitAuthor || '').slice(0, 200), String(metadata.commitMessage || '').slice(0, 500), String(detail || '').slice(0, 4000), duration, Number(id)
       );
     });
     transaction();
-    if (normalizedStatus === 'running' && row?.siteId) this.manager.activeDeploymentIds?.set(Number(row.siteId), Number(id));
+    if (activeStatuses.has(normalizedStatus) && row?.siteId) this.manager.activeDeploymentIds?.set(Number(row.siteId), Number(id));
   }
 
   recordDeployment(siteId, { source = 'manual', status = 'running', ref = '', detail = '', commitSha = '', commitAuthor = '', commitMessage = '' } = {}) {
@@ -160,20 +172,36 @@ class DeploymentOperations extends ConfigurationOperations {
 
   async deployGit(site, input) {
     const deploymentId = this.beginDeployment(site.id, 'git', input.branch || site.git_branch || 'main');
+    const previousDeploymentId = this.manager.activeDeploymentIds?.get(Number(site.id)) || null;
     this.manager.log(site.id, 'info', 'Deployment queued.', { deploymentId });
     try {
       this.updateDeploymentStatus(deploymentId, 'building', 'Cloning repository and running the configured build pipeline.');
       const cloned = await this.cloneRepository(site, { ...input, deploymentId });
       const version = `${safeName(cloned.ref)}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}`;
       this.manager.log(site.id, 'info', `Build completed for ${cloned.commitSha.slice(0, 9)}; activating release.`, { deploymentId });
+      // Runtime stop/start output during activation belongs to the deployment being activated,
+      // not the previously-active release.
+      this.manager.activeDeploymentIds?.set(Number(site.id), deploymentId);
       const release = await this.activateRelease(site, cloned.stage, { source: 'git', version, commitSha: cloned.commitSha, deploymentId });
-      this.db.prepare('UPDATE sites SET git_url = ?, git_branch = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(cloned.repository, cloned.ref, site.id);
-      this.finishDeployment(deploymentId, 'running', 'Git deployment is the active release.', cloned);
-      this.manager.log(site.id, 'info', 'Deployment activated successfully.', { deploymentId });
-      return { ...release, deploymentId, commitAuthor: cloned.commitAuthor, commitMessage: cloned.commitMessage, commitUrl: providerCommitUrl(cloned.repository, cloned.commitSha) };
+      let warning = null;
+      try {
+        this.db.prepare('UPDATE sites SET git_url = ?, git_branch = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(cloned.repository, cloned.ref, site.id);
+        this.finishDeployment(deploymentId, 'running', 'Git deployment is the active release.', cloned);
+      } catch (error) {
+        warning = `Release activated, but SHAM could not finalize all deployment metadata: ${error.message}`;
+        this.manager.activeDeploymentIds?.set(Number(site.id), deploymentId);
+        try { this.finishDeployment(deploymentId, 'deployed-with-warning', warning, cloned); }
+        catch (historyError) { this.manager.log(site.id, 'error', `Could not persist deployment warning state: ${historyError.message}`, { deploymentId }); }
+        this.manager.log(site.id, 'error', warning, { deploymentId });
+      }
+      this.manager.log(site.id, 'info', warning ? 'Deployment activated with a metadata warning.' : 'Deployment activated successfully.', { deploymentId });
+      return { ...release, deploymentId, commitAuthor: cloned.commitAuthor, commitMessage: cloned.commitMessage, commitUrl: providerCommitUrl(cloned.repository, cloned.commitSha), warning };
     } catch (error) {
-      this.finishDeployment(deploymentId, 'failed', error.message);
+      try { this.finishDeployment(deploymentId, 'failed', error.message); }
+      catch (historyError) { this.manager.log(site.id, 'error', `Could not persist failed deployment state: ${historyError.message}`, { deploymentId }); }
       this.manager.log(site.id, 'error', `Deployment failed: ${error.message}`, { deploymentId });
+      if (previousDeploymentId) this.manager.activeDeploymentIds?.set(Number(site.id), previousDeploymentId);
+      else this.manager.activeDeploymentIds?.delete(Number(site.id));
       throw error;
     }
   }
@@ -206,19 +234,26 @@ class DeploymentOperations extends ConfigurationOperations {
       });
       transaction();
       metadataCommitted = true;
-      const currentDeployment = this.db.prepare("SELECT id FROM site_deployments WHERE site_id = ? AND status = 'running' ORDER BY id DESC LIMIT 1").get(site.id);
-      if (currentDeployment) this.db.prepare("UPDATE site_deployments SET status = 'rolled-back' WHERE id = ?").run(currentDeployment.id);
-      let activatedDeployment = selected.deployment_id
-        ? this.db.prepare('SELECT id FROM site_deployments WHERE site_id = ? AND id = ?').get(site.id, selected.deployment_id)
-        : null;
-      if (!activatedDeployment && selected.commit_sha) activatedDeployment = this.db.prepare('SELECT id FROM site_deployments WHERE site_id = ? AND commit_sha = ? AND id != COALESCE(?, 0) ORDER BY id DESC LIMIT 1').get(site.id, selected.commit_sha, currentDeployment?.id || 0);
-      if (activatedDeployment) {
-        this.db.prepare("UPDATE site_deployments SET status = 'running', detail = 'This deployment was reactivated by rollback.' WHERE id = ?").run(activatedDeployment.id);
-        this.manager.activeDeploymentIds?.set(Number(site.id), Number(activatedDeployment.id));
-      } else {
-        const rollbackDeploymentId = this.recordDeployment(site.id, { source: 'rollback', status: 'running', ref: String(selected.id), detail: `Rollback activated release ${selected.version}.`, commitSha: selected.commit_sha || '' });
-        this.manager.activeDeploymentIds?.set(Number(site.id), rollbackDeploymentId);
+      let historyWarning = null;
+      try {
+        const currentDeployment = this.db.prepare("SELECT id FROM site_deployments WHERE site_id = ? AND status IN ('running', 'deployed-with-warning') ORDER BY id DESC LIMIT 1").get(site.id);
+        let activatedDeployment = selected.deployment_id
+          ? this.db.prepare('SELECT id FROM site_deployments WHERE site_id = ? AND id = ?').get(site.id, selected.deployment_id)
+          : null;
+        if (!activatedDeployment && selected.commit_sha) activatedDeployment = this.db.prepare('SELECT id FROM site_deployments WHERE site_id = ? AND commit_sha = ? AND id != COALESCE(?, 0) ORDER BY id DESC LIMIT 1').get(site.id, selected.commit_sha, currentDeployment?.id || 0);
+        if (activatedDeployment) this.manager.activeDeploymentIds?.set(Number(site.id), Number(activatedDeployment.id));
+        if (currentDeployment) this.db.prepare("UPDATE site_deployments SET status = 'rolled-back' WHERE id = ?").run(currentDeployment.id);
+        if (activatedDeployment) {
+          this.updateDeploymentStatus(activatedDeployment.id, 'running', 'This deployment was reactivated by rollback.');
+        } else {
+          const rollbackDeploymentId = this.recordDeployment(site.id, { source: 'rollback', status: 'running', ref: String(selected.id), detail: `Rollback activated release ${selected.version}.`, commitSha: selected.commit_sha || '' });
+          this.manager.activeDeploymentIds?.set(Number(site.id), rollbackDeploymentId);
+        }
+      } catch (historyError) {
+        historyWarning = `Release rollback is active, but SHAM could not finalize deployment history: ${historyError.message}`;
+        this.manager.log(site.id, 'error', historyWarning);
       }
+      return { releases: this.listReleases(site.id), warning: historyWarning };
     } catch (error) {
       if (!metadataCommitted) {
         await this.manager.stop(site.id).catch(() => {});
@@ -228,7 +263,6 @@ class DeploymentOperations extends ConfigurationOperations {
       }
       throw error;
     }
-    return this.listReleases(site.id);
   }
 
   async pruneReleases(siteId, keep = 8) {
@@ -283,7 +317,10 @@ class DeploymentOperations extends ConfigurationOperations {
       }
       const result = this.db.prepare("INSERT INTO preview_deployments (site_id, hostname, port, directory_name, status, expires_at) VALUES (?, ?, ?, ?, 'running', ?)").run(site.id, previewHostname, port, directoryName, expires);
       const id = Number(result.lastInsertRowid);
+      runtime.hostname = previewHostname;
+      runtime.expiresAt = expires;
       this.previewRuntimes.set(id, runtime);
+      this.previewHostnames.set(previewHostname, id);
       return { id, hostname: previewHostname, port, expiresAt: expires, status: 'running' };
     } catch (error) {
       if (runtime?.server) await closeServer(runtime.server);
@@ -302,18 +339,26 @@ class DeploymentOperations extends ConfigurationOperations {
   }
 
   previewForHostname(hostname) {
-    const row = this.db.prepare("SELECT * FROM preview_deployments WHERE lower(hostname) = lower(?) AND status = 'running' AND expires_at > CURRENT_TIMESTAMP").get(hostname);
-    const runtime = row && this.previewRuntimes.get(row.id);
-    return runtime ? { row, target: runtime.target } : null;
+    const key = String(hostname || '').trim().toLowerCase();
+    const id = this.previewHostnames.get(key);
+    const runtime = id && this.previewRuntimes.get(id);
+    if (!runtime) { if (id) this.previewHostnames.delete(key); return null; }
+    if (Date.parse(runtime.expiresAt || '') <= Date.now()) return null;
+    return { preview: true, id, hostname: key, target: runtime.target };
   }
 
-  async deletePreview(id) {
-    const row = this.db.prepare('SELECT * FROM preview_deployments WHERE id = ?').get(Number(id));
+  async deletePreview(id, expectedSiteId = null) {
+    const numericId = Number(id);
+    const numericSiteId = expectedSiteId == null ? null : Number(expectedSiteId);
+    const row = numericSiteId == null
+      ? this.db.prepare('SELECT * FROM preview_deployments WHERE id = ?').get(numericId)
+      : this.db.prepare('SELECT * FROM preview_deployments WHERE id = ? AND site_id = ?').get(numericId, numericSiteId);
     if (!row) throw new Error('Preview not found.');
     const runtime = this.previewRuntimes.get(row.id);
     if (runtime?.server) await closeServer(runtime.server);
     if (runtime?.child) await terminateAndWait(runtime.child);
     this.previewRuntimes.delete(row.id);
+    this.previewHostnames.delete(String(row.hostname || '').toLowerCase());
     this.db.prepare('DELETE FROM preview_deployments WHERE id = ?').run(row.id);
     await fs.promises.rm(path.join(PREVIEWS_DIR, row.directory_name), { recursive: true, force: true });
   }
@@ -427,7 +472,7 @@ class DeploymentOperations extends ConfigurationOperations {
         socket.once('error', () => { socket.destroy(); if (Date.now() - started > 30_000) reject(new Error('Anubis did not become ready within 30 seconds.')); else setTimeout(check, 200); });
       };
       check();
-    }).catch(async (error) => { terminate(child); await runProcess(DOCKER_BIN, ['rm', '-f', `sham-anubis-${site.id}`], { timeoutMs: 10_000 }).catch(() => {}); throw error; });
+    }).catch(async (error) => { terminate(child); await runProcess(DOCKER_BIN, ['rm', '-f', `sham-anubis-${site.id}`], this.trackedProcessOptions({ timeoutMs: 10_000 })).catch(() => {}); throw error; });
     const runtime = { child, port, metricsPort, target: `http://127.0.0.1:${port}`, metrics: `http://127.0.0.1:${metricsPort}/metrics` };
     child.once('exit', () => { if (this.anubisRuntimes.get(site.id) === runtime) this.anubisRuntimes.delete(site.id); });
     this.anubisRuntimes.set(site.id, runtime);
@@ -440,7 +485,7 @@ class DeploymentOperations extends ConfigurationOperations {
     if (!runtime) return;
     this.anubisRuntimes.delete(Number(siteId));
     terminate(runtime.child);
-    await runProcess(DOCKER_BIN, ['rm', '-f', `sham-anubis-${siteId}`], { timeoutMs: 15_000 }).catch(() => {});
+    await runProcess(DOCKER_BIN, ['rm', '-f', `sham-anubis-${siteId}`], this.trackedProcessOptions({ timeoutMs: 15_000 })).catch(() => {});
   }
 
   async afterSiteStart(site) {

@@ -156,18 +156,18 @@ ensureColumn('users', 'recovery_codes_json', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('plugins', 'permissions_json', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('plugins', 'signature_status', "TEXT NOT NULL DEFAULT 'unsigned'");
 ensureColumn('plugins', 'isolation', "TEXT NOT NULL DEFAULT 'in-process'");
-ensureColumn('runtime_logs', 'deployment_id', 'INTEGER');
-
 db.exec(`
   CREATE TABLE IF NOT EXISTS site_visitor_stats (
     site_id INTEGER NOT NULL,
     ip TEXT NOT NULL,
     country TEXT NOT NULL DEFAULT 'ZZ',
+    client_type TEXT NOT NULL DEFAULT 'unknown',
+    user_agent TEXT NOT NULL DEFAULT '',
     requests INTEGER NOT NULL DEFAULT 0,
     bytes INTEGER NOT NULL DEFAULT 0,
     errors INTEGER NOT NULL DEFAULT 0,
     last_request_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (site_id, ip, country),
+    PRIMARY KEY (site_id, ip, country, client_type),
     FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
   );
 
@@ -225,6 +225,7 @@ db.exec(`
     level TEXT NOT NULL,
     message TEXT NOT NULL,
     context_json TEXT,
+    deployment_id INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
   );
@@ -342,6 +343,7 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_site_deployments_recent ON site_deployments(site_id, id DESC);
+  CREATE INDEX IF NOT EXISTS idx_site_deployments_status_started ON site_deployments(status, started_at DESC);
 
   CREATE TABLE IF NOT EXISTS site_releases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -423,12 +425,12 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_job_runs_job ON job_runs(job_id, started_at DESC);
   CREATE INDEX IF NOT EXISTS idx_site_releases_site ON site_releases(site_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_preview_expiry ON preview_deployments(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_preview_site_recent ON preview_deployments(site_id, id DESC);
   CREATE INDEX IF NOT EXISTS idx_backup_runs_started ON backup_runs(started_at DESC);
   CREATE INDEX IF NOT EXISTS idx_deploy_webhook_received ON deploy_webhook_deliveries(received_at);
 
   CREATE INDEX IF NOT EXISTS idx_runtime_logs_created ON runtime_logs(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_runtime_logs_site ON runtime_logs(site_id, created_at DESC);
-  CREATE INDEX IF NOT EXISTS idx_runtime_logs_deployment ON runtime_logs(deployment_id, created_at ASC);
   CREATE INDEX IF NOT EXISTS idx_dependency_scans_site ON dependency_scans(site_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_snapshots_site ON site_snapshots(site_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_performance_samples_time ON performance_samples(sampled_at DESC);
@@ -476,8 +478,58 @@ db.exec(`
 
 ensureColumn('site_visitor_stats', 'client_type', "TEXT NOT NULL DEFAULT 'unknown'");
 ensureColumn('site_visitor_stats', 'user_agent', "TEXT NOT NULL DEFAULT ''");
+
+function visitorStatsPrimaryKey() {
+  return db.prepare('PRAGMA table_info(site_visitor_stats)').all()
+    .filter((row) => Number(row.pk) > 0)
+    .sort((a, b) => Number(a.pk) - Number(b.pk))
+    .map((row) => row.name);
+}
+
+if (visitorStatsPrimaryKey().join(',') !== 'site_id,ip,country,client_type') {
+  db.transaction(() => {
+    db.exec(`
+      DROP INDEX IF EXISTS idx_site_visitor_stats_recent;
+      DROP INDEX IF EXISTS idx_site_visitor_stats_recent_global;
+      DROP INDEX IF EXISTS idx_site_visitor_stats_ip;
+      DROP INDEX IF EXISTS idx_site_visitor_stats_country;
+      DROP INDEX IF EXISTS idx_site_visitor_stats_client;
+      ALTER TABLE site_visitor_stats RENAME TO site_visitor_stats_legacy;
+      CREATE TABLE site_visitor_stats (
+        site_id INTEGER NOT NULL,
+        ip TEXT NOT NULL,
+        country TEXT NOT NULL DEFAULT 'ZZ',
+        client_type TEXT NOT NULL DEFAULT 'unknown',
+        user_agent TEXT NOT NULL DEFAULT '',
+        requests INTEGER NOT NULL DEFAULT 0,
+        bytes INTEGER NOT NULL DEFAULT 0,
+        errors INTEGER NOT NULL DEFAULT 0,
+        last_request_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (site_id, ip, country, client_type),
+        FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+      );
+      INSERT INTO site_visitor_stats (site_id, ip, country, client_type, user_agent, requests, bytes, errors, last_request_at)
+      SELECT site_id, ip, country,
+        CASE WHEN client_type IN ('browser', 'search', 'crawler', 'llm', 'unknown') THEN client_type ELSE 'unknown' END,
+        MAX(COALESCE(user_agent, '')), SUM(requests), SUM(bytes), SUM(errors), MAX(last_request_at)
+      FROM site_visitor_stats_legacy
+      GROUP BY site_id, ip, country,
+        CASE WHEN client_type IN ('browser', 'search', 'crawler', 'llm', 'unknown') THEN client_type ELSE 'unknown' END;
+      DROP TABLE site_visitor_stats_legacy;
+    `);
+  })();
+}
+
+ensureColumn('runtime_logs', 'deployment_id', 'INTEGER');
 ensureColumn('site_releases', 'deployment_id', 'INTEGER');
-db.exec('CREATE INDEX IF NOT EXISTS idx_site_visitor_stats_client ON site_visitor_stats(client_type, last_request_at DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_runtime_logs_deployment ON runtime_logs(deployment_id, created_at ASC)');
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_site_visitor_stats_recent ON site_visitor_stats(site_id, last_request_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_site_visitor_stats_recent_global ON site_visitor_stats(last_request_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_site_visitor_stats_ip ON site_visitor_stats(ip);
+  CREATE INDEX IF NOT EXISTS idx_site_visitor_stats_country ON site_visitor_stats(country);
+  CREATE INDEX IF NOT EXISTS idx_site_visitor_stats_client ON site_visitor_stats(client_type, last_request_at DESC);
+`);
 db.exec('CREATE INDEX IF NOT EXISTS idx_site_releases_deployment ON site_releases(deployment_id)');
 
 function tightenDatabasePermissions() {

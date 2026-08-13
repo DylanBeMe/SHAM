@@ -169,6 +169,26 @@ function addOtelHeaderRow(header = {}) {
   $('#otel-header-rows').append(row);
 }
 
+function addAlertHeaderRow(header = {}) {
+  const row = document.createElement('div');
+  row.className = 'config-row alert-header-row';
+  row.innerHTML = `<label><span>Header</span><input data-alert-header-name maxlength="200" value="${escapeHtml(header.name || '')}" placeholder="Authorization"></label>
+    <label><span>Value</span><input data-alert-header-value type="password" maxlength="4096" value="${escapeHtml(header.value || '')}" placeholder="Bearer …"></label>
+    <button class="icon-button danger-text" data-remove-config-row type="button" aria-label="Remove alert header">×</button>`;
+  $('[data-remove-config-row]', row).addEventListener('click', () => row.remove());
+  $('#alert-header-rows').append(row);
+}
+
+function updateAlertDestinationFields() {
+  const email = $('#alert-destination-kind').value === 'email';
+  $('#alert-destination-webhook-fields').hidden = email;
+  $('#alert-destination-email-fields').hidden = !email;
+  const target = $('#alert-destination-target');
+  target.type = email ? 'email' : 'url';
+  target.placeholder = email ? 'ops@example.com' : 'https://hooks.example/…';
+  $('#alert-destination-target-label').textContent = email ? 'Recipient address' : 'Webhook URL';
+}
+
 function renderOperationsInstance(payload) {
   const settings = payload.settings || {};
   const backup = payload.backupSettings || {};
@@ -436,7 +456,7 @@ $('#release-list').addEventListener('click', async (event) => {
   if (!button || !(await requestAction({ title: 'Roll back this release?', message: 'SHAM will atomically replace the active release and restart the site.', confirmLabel: 'Roll back', danger: true }))) return;
   const site = operationsSite();
   setBusy(button, true, 'Rolling back…');
-  try { await api(`/api/sites/${site.id}/releases/${button.dataset.releaseRollback}/rollback`, { method: 'POST' }); toast('Release rolled back.'); await Promise.all([loadSites(), loadOperations()]); }
+  try { const result = await api(`/api/sites/${site.id}/releases/${button.dataset.releaseRollback}/rollback`, { method: 'POST' }); toast(result.warning || 'Release rolled back.', result.warning ? 'warning' : 'success'); await Promise.all([loadSites(), loadOperations()]); }
   catch (error) { toast(error.message, 'error'); setBusy(button, false); }
 });
 
@@ -670,15 +690,48 @@ $('#database-profile-list').addEventListener('click', async (event) => {
   catch (error) { toast(error.message, 'error'); }
 });
 
-$('#add-alert-destination').addEventListener('click', async () => {
-  const name = await requestAction({ title: 'New alert destination', message: 'Add a webhook, Slack, Discord, or sendmail target.', confirmLabel: 'Next', inputLabel: 'Destination name', placeholder: 'On-call webhook' });
-  if (!name) return;
-  const kind = await requestAction({ title: 'Destination type', message: 'Enter webhook, slack, discord, or email.', confirmLabel: 'Next', inputLabel: 'Type', inputValue: 'webhook' });
-  if (!kind) return;
-  const configText = await requestAction({ title: 'Destination configuration', message: 'Webhook types use {"url":"https://…"}; email uses {"to":"ops@example.com"}.', confirmLabel: 'Save destination', inputLabel: 'JSON configuration', inputValue: '{}'});
-  if (!configText) return;
-  try { await api('/api/admin/alert-destinations', { method: 'POST', body: { name, kind, config: JSON.parse(configText), enabled: true } }); toast('Alert destination saved.'); await loadOperations(); }
-  catch (error) { toast(error.message, 'error'); }
+$('#add-alert-destination').addEventListener('click', () => {
+  $('#alert-destination-form').reset();
+  $('#alert-destination-kind').value = 'webhook';
+  $('#alert-header-rows').innerHTML = '';
+  $('#alert-destination-error').textContent = '';
+  updateAlertDestinationFields();
+  showModal($('#alert-destination-dialog'));
+});
+$('#alert-destination-kind').addEventListener('change', updateAlertDestinationFields);
+$('#add-alert-header').addEventListener('click', () => addAlertHeaderRow());
+$('#alert-destination-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const button = $('button[type="submit"]', form);
+  const name = $('#alert-destination-name').value.trim();
+  const kind = $('#alert-destination-kind').value;
+  const target = $('#alert-destination-target').value.trim();
+  const config = kind === 'email'
+    ? { to: target, from: $('#alert-destination-from').value.trim(), sendmail: $('#alert-destination-sendmail').value.trim() }
+    : { url: target, headers: {} };
+  if (kind !== 'email') {
+    const seen = new Set();
+    for (const row of $$('.alert-header-row', $('#alert-header-rows'))) {
+      const header = $('[data-alert-header-name]', row).value.trim();
+      const value = $('[data-alert-header-value]', row).value;
+      if (!header && !value) continue;
+      if (!header || !value) { $('#alert-destination-error').textContent = 'Each alert header needs both a name and a value.'; return; }
+      const normalized = header.toLowerCase();
+      if (seen.has(normalized)) { $('#alert-destination-error').textContent = `Header “${header}” is duplicated.`; return; }
+      seen.add(normalized);
+      config.headers[header] = value;
+    }
+  }
+  $('#alert-destination-error').textContent = '';
+  setBusy(button, true, 'Saving…');
+  try {
+    await api('/api/admin/alert-destinations', { method: 'POST', body: { name, kind, config, enabled: true } });
+    $('#alert-destination-dialog').close();
+    toast('Alert destination saved.');
+    await loadOperations();
+  } catch (error) { $('#alert-destination-error').textContent = error.message; }
+  finally { setBusy(button, false); }
 });
 $('#alert-destination-list').addEventListener('click', async (event) => {
   const test = event.target.closest('[data-alert-test]');

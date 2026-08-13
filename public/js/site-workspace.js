@@ -34,38 +34,65 @@ function renderWorkspaceDeployments(deployments) {
     const message = item.commitMessage || item.detail || item.ref || 'Deployment';
     const author = item.commitAuthor ? ` · ${escapeHtml(item.commitAuthor)}` : '';
     const duration = item.durationMs ? ` · ${(Number(item.durationMs) / 1000).toFixed(1)}s` : '';
-    const active = item.activeRelease || item.status === 'running' ? '<span class="badge success">Active</span>' : '';
+    const activeStatus = item.status === 'running' || item.status === 'deployed-with-warning';
+    const active = item.activeRelease || activeStatus
+      ? `<span class="badge ${item.status === 'deployed-with-warning' ? 'warning' : 'success'}">${item.status === 'deployed-with-warning' ? 'Active · warning' : 'Active'}</span>`
+      : '';
     const actions = state.user?.role === 'admin' ? `<div class="deployment-actions"><button class="button ghost compact-button" data-deployment-logs type="button">View logs${item.logCount ? ` (${item.logCount})` : ''}</button>${site?.git_url ? '<button class="button ghost compact-button" data-deployment-redeploy type="button">Redeploy</button>' : ''}${item.releaseId ? `<button class="button ghost compact-button" data-deployment-rollback="${item.releaseId}" type="button">Roll back</button>` : ''}</div>` : '';
     return `<article class="deployment-row" data-deployment-id="${item.id}" data-deployment-ref="${escapeHtml(item.ref || '')}"><span class="deployment-status ${escapeHtml(item.status)}" aria-label="${escapeHtml(item.status)}"></span><div class="deployment-main"><strong>${commit}${escapeHtml(message)}</strong><span class="muted">${escapeHtml(item.source || 'deployment')}${author}</span>${actions}</div><div class="deployment-meta">${active}${escapeHtml(formatDate(item.finishedAt || item.startedAt))}${duration}</div></article>`;
   }).join('') : '<div class="empty-state compact"><p>No deployments have been recorded yet.</p></div>';
 }
 
+function workspaceRequestIsCurrent(site, requestId, kind) {
+  const currentId = kind === 'deployments' ? state.siteWorkspaceDeploymentsRequest : state.siteWorkspaceLogsRequest;
+  return Number(state.siteWorkspaceId) === Number(site?.id) && requestId === currentId;
+}
+
 async function loadWorkspaceDeployments(site) {
-  try { const data = await api(`/api/sites/${site.id}/deployments?limit=50`); renderWorkspaceDeployments(data.deployments || []); }
-  catch (error) { $('#workspace-deployment-list').innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`; }
+  const requestId = ++state.siteWorkspaceDeploymentsRequest;
+  try {
+    const data = await api(`/api/sites/${site.id}/deployments?limit=50`);
+    if (workspaceRequestIsCurrent(site, requestId, 'deployments')) renderWorkspaceDeployments(data.deployments || []);
+  } catch (error) {
+    if (workspaceRequestIsCurrent(site, requestId, 'deployments')) $('#workspace-deployment-list').innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`;
+  }
 }
 
 async function loadWorkspaceDeploymentLogs(site, deploymentId) {
+  const requestId = ++state.siteWorkspaceLogsRequest;
   $('#workspace-log-list').innerHTML = '<div class="empty-state compact"><p>Loading deployment logs…</p></div>';
   try {
     const data = await api(`/api/sites/${site.id}/deployments/${deploymentId}/logs?limit=1000`);
+    if (!workspaceRequestIsCurrent(site, requestId, 'logs')) return;
     $('#workspace-log-list').innerHTML = data.logs?.length ? `<div class="notice">Showing logs attached to deployment #${deploymentId}. Use Refresh logs to return to the complete runtime log.</div>` + data.logs.map((row) => `<div class="event-item ${escapeHtml(row.level || '')}"><span class="event-icon">${row.level === 'error' ? '!' : '·'}</span><div><strong>${escapeHtml(row.message)}</strong><p>${escapeHtml(formatDate(row.createdAt))}</p></div></div>`).join('') : '<div class="empty-state compact"><p>No logs were attached to this deployment.</p></div>';
-  } catch (error) { $('#workspace-log-list').innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`; }
+  } catch (error) {
+    if (workspaceRequestIsCurrent(site, requestId, 'logs')) $('#workspace-log-list').innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`;
+  }
 }
 
 async function loadWorkspaceLogs(site) {
+  const requestId = ++state.siteWorkspaceLogsRequest;
   $('#workspace-log-list').innerHTML = '<div class="empty-state compact"><p>Loading logs…</p></div>';
   try {
     const data = await api(`/api/runtime-logs?siteId=${site.id}&limit=150`);
+    if (!workspaceRequestIsCurrent(site, requestId, 'logs')) return;
     $('#workspace-log-list').innerHTML = data.logs?.length ? data.logs.map((row) => `<div class="event-item ${escapeHtml(row.level || '')}"><span class="event-icon">${row.level === 'error' ? '!' : '·'}</span><div><strong>${escapeHtml(row.message)}</strong><p>${escapeHtml(formatDate(row.createdAt))}</p></div></div>`).join('') : '<div class="empty-state compact"><p>No runtime logs have been recorded.</p></div>';
-  } catch (error) { $('#workspace-log-list').innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`; }
+  } catch (error) {
+    if (workspaceRequestIsCurrent(site, requestId, 'logs')) $('#workspace-log-list').innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`;
+  }
 }
 
-function selectWorkspaceTab(tab, { load = true } = {}) {
+function selectWorkspaceTab(tab, { load = true, focus = false } = {}) {
   const site = currentWorkspaceSite();
   if (!site) return;
   state.siteWorkspaceTab = tab;
-  $$('[data-site-workspace-tab]').forEach((button) => button.classList.toggle('active', button.dataset.siteWorkspaceTab === tab));
+  $$('[data-site-workspace-tab]').forEach((button) => {
+    const active = button.dataset.siteWorkspaceTab === tab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+    button.tabIndex = active ? 0 : -1;
+    if (active && focus) button.focus();
+  });
   $$('.workspace-panel').forEach((panel) => { panel.hidden = panel.id !== `site-workspace-${tab}`; });
   if (load && tab === 'deployments') loadWorkspaceDeployments(site);
   if (load && tab === 'logs') loadWorkspaceLogs(site);
@@ -74,6 +101,8 @@ function selectWorkspaceTab(tab, { load = true } = {}) {
 }
 
 function openSiteWorkspace(site, tab = 'overview') {
+  state.siteWorkspaceDeploymentsRequest += 1;
+  state.siteWorkspaceLogsRequest += 1;
   state.siteWorkspaceId = site.id;
   const url = siteDisplayUrl(site);
   $('#site-workspace-title').textContent = site.name;
@@ -88,7 +117,19 @@ function openSiteWorkspace(site, tab = 'overview') {
   selectWorkspaceTab(tab);
 }
 
-$$('[data-site-workspace-tab]').forEach((button) => button.addEventListener('click', () => selectWorkspaceTab(button.dataset.siteWorkspaceTab)));
+$$('[data-site-workspace-tab]').forEach((button) => {
+  button.addEventListener('click', () => selectWorkspaceTab(button.dataset.siteWorkspaceTab));
+  button.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = $$('[data-site-workspace-tab]');
+    const current = tabs.indexOf(button);
+    const next = event.key === 'Home' ? tabs[0]
+      : event.key === 'End' ? tabs.at(-1)
+        : tabs[(current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
+    selectWorkspaceTab(next.dataset.siteWorkspaceTab, { focus: true });
+  });
+});
 $('#site-workspace-back').addEventListener('click', () => showSection('sites'));
 $('#site-workspace-open').addEventListener('click', () => window.open($('#site-workspace-open').dataset.url, '_blank', 'noopener'));
 $('#site-workspace-restart').addEventListener('click', async (event) => { const site = currentWorkspaceSite(); if (site) await handleSiteAction(site, 'restart', event.currentTarget); });
@@ -138,8 +179,8 @@ $('#workspace-deployment-list').addEventListener('click', async (event) => {
   if (!(await requestAction({ title: 'Roll back this release?', message: 'SHAM will atomically switch this site back to the selected retained release.', confirmLabel: 'Roll back' }))) return;
   setBusy(rollback, true, 'Rolling back…');
   try {
-    await api(`/api/sites/${site.id}/releases/${rollback.dataset.deploymentRollback}/rollback`, { method: 'POST' });
-    toast('Release rollback activated.');
+    const result = await api(`/api/sites/${site.id}/releases/${rollback.dataset.deploymentRollback}/rollback`, { method: 'POST' });
+    toast(result.warning || 'Release rollback activated.', result.warning ? 'warning' : 'success');
     await Promise.all([loadSites(), loadWorkspaceDeployments(site)]);
   } catch (error) { toast(error.message, 'error'); }
   finally { setBusy(rollback, false); }
