@@ -1,5 +1,7 @@
 'use strict';
 
+process.env.SHAM_JWT_SECRET = 'product-refactor-test-secret-at-least-32-characters';
+
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
