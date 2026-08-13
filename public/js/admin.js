@@ -38,10 +38,22 @@ async function loadAdmin() {
     $('#cloudflare-zone').value = integrations.cloudflareZoneId || '';
     $('#cloudflare-ip').value = integrations.cloudflareTargetIp || '';
     $('#certbot-email').value = integrations.certbotEmail || '';
+    $('#cloudflare-reconcile-enabled').checked = Boolean(integrations.cloudflareReconcileEnabled);
+    $('#cloudflare-reconcile-minutes').value = integrations.cloudflareReconcileMinutes || 15;
     $('#cloudflare-token').value = '';
     $('#clear-cloudflare-token').checked = false;
     $('#cloudflare-token').disabled = false;
     $('#cloudflare-token-status').textContent = integrations.cloudflareTokenConfigured ? 'A token is currently saved.' : 'No token is saved.';
+    const oidc = settings.oidc || {};
+    $('#oidc-enabled').checked = Boolean(oidc.enabled);
+    $('#oidc-issuer').value = oidc.issuer || '';
+    $('#oidc-client-id').value = oidc.clientId || '';
+    $('#oidc-client-secret').value = '';
+    $('#oidc-clear-secret').checked = false;
+    $('#oidc-client-secret').disabled = false;
+    $('#oidc-auto-provision').checked = Boolean(oidc.autoProvision);
+    $('#oidc-default-role').value = oidc.defaultRole || 'user';
+    $('#oidc-secret-status').textContent = oidc.clientSecretConfigured ? 'A client secret is saved.' : 'No client secret is saved (public-client OIDC is allowed).';
     const security = settings.security || {};
     $('#visitor-privacy').value = security.visitorPrivacyMode || 'mask';
     $('#log-retention').value = security.logRetentionDays || 30;
@@ -92,6 +104,35 @@ $('#clear-cloudflare-token').addEventListener('change', (event) => {
   if (event.target.checked) $('#cloudflare-token').value = '';
 });
 
+$('#oidc-clear-secret').addEventListener('change', (event) => {
+  $('#oidc-client-secret').disabled = event.target.checked;
+  if (event.target.checked) $('#oidc-client-secret').value = '';
+});
+
+$('#oidc-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = $('#oidc-form button[type="submit"]');
+  setBusy(button, true, 'Saving…');
+  try {
+    const result = await api('/api/admin/settings/oidc', { method: 'PUT', body: {
+      enabled: $('#oidc-enabled').checked,
+      issuer: $('#oidc-issuer').value,
+      clientId: $('#oidc-client-id').value,
+      clientSecret: $('#oidc-client-secret').value,
+      clearClientSecret: $('#oidc-clear-secret').checked,
+      autoProvision: $('#oidc-auto-provision').checked,
+      defaultRole: $('#oidc-default-role').value
+    } });
+    $('#oidc-client-secret').value = '';
+    $('#oidc-clear-secret').checked = false;
+    $('#oidc-client-secret').disabled = false;
+    $('#oidc-secret-status').textContent = result.oidc.clientSecretConfigured ? 'A client secret is saved.' : 'No client secret is saved (public-client OIDC is allowed).';
+    if (state.bootstrap) state.bootstrap.oidcEnabled = Boolean(result.oidc.enabled && result.oidc.issuer && result.oidc.clientId);
+    toast('OIDC settings saved.');
+  } catch (error) { toast(error.message, 'error'); }
+  finally { setBusy(button, false); }
+});
+
 $('#integrations-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const button = $('#integrations-form button[type="submit"]');
@@ -104,7 +145,9 @@ $('#integrations-form').addEventListener('submit', async (event) => {
         clearCloudflareToken: $('#clear-cloudflare-token').checked,
         cloudflareZoneId: $('#cloudflare-zone').value,
         cloudflareTargetIp: $('#cloudflare-ip').value,
-        certbotEmail: $('#certbot-email').value
+        certbotEmail: $('#certbot-email').value,
+        cloudflareReconcileEnabled: $('#cloudflare-reconcile-enabled').checked,
+        cloudflareReconcileMinutes: Number($('#cloudflare-reconcile-minutes').value || 15)
       }
     });
     $('#cloudflare-token').value = '';

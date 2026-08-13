@@ -1,5 +1,7 @@
 'use strict';
 
+const { siteRoot } = require('../site-paths');
+
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -237,17 +239,15 @@ function closeServer(server) {
   });
 }
 
-function siteRoot(site) {
-  return path.join(SITES_DIR, site.directory_name);
-}
-
 function requiredFile(site) {
   if (site.runtime_type === 'proxy') return '';
-  return site.runtime_type === 'node' ? site.node_entry : site.entry_file;
+  if (site.runtime_type === 'node' && !site.start_command) return site.node_entry;
+  if (site.runtime_type === 'static') return site.entry_file;
+  return '';
 }
 
 async function ensureRequiredFile(site, root) {
-  if (site.runtime_type === 'proxy') return;
+  if (site.runtime_type === 'proxy' || !requiredFile(site)) return;
   const relative = safeRelativePath(requiredFile(site), 'Required runtime file');
   const absolute = path.join(root, ...relative.split('/'));
   const rootReal = await fs.promises.realpath(root);

@@ -33,15 +33,15 @@ function renderSites() {
     return `<article class="site-card" data-site-id="${site.id}">
       <div class="site-card-head"><div class="site-title"><div class="site-title-line"><button class="site-title-button" data-action="workspace" type="button"><h2>${escapeHtml(site.name)}</h2></button><button class="pin-button ${site.pinned ? 'active' : ''}" data-action="pin" type="button" aria-pressed="${Boolean(site.pinned)}" aria-label="${site.pinned ? 'Unpin' : 'Pin'} ${escapeHtml(site.name)}" title="${site.pinned ? 'Unpin site' : 'Pin site'}">★</button></div><a href="${escapeHtml(displayUrl)}" target="_blank" rel="noopener">${escapeHtml(displayUrl)}</a></div><span class="status-pill ${statusClass}">${statusText}</span></div>
       <div class="site-meta">
-        <div class="meta-cell"><span>Runtime</span><strong>${site.runtime_type === 'node' ? 'Node.js' : site.runtime_type === 'proxy' ? 'Reverse proxy' : 'Static'}${site.minify ? ' · Minified' : ''}${site.obfuscate ? ' · Obfuscated' : ''}</strong></div>
+        <div class="meta-cell"><span>Runtime</span><strong>${escapeHtml(({ static: 'Static', node: 'Node.js compatibility', process: 'Managed process', container: 'Container', compose: 'Docker Compose', proxy: 'Reverse proxy' })[site.runtime_type] || site.runtime_type)}${site.runtime_preset ? ` · ${escapeHtml(site.runtime_preset)}` : ''}${site.minify ? ' · Minified' : ''}${site.obfuscate ? ' · Obfuscated' : ''}</strong></div>
         <div class="meta-cell"><span>Listener</span><strong>${escapeHtml(site.bind_host)}:${site.port}</strong></div>
-        <div class="meta-cell"><span>Entry</span><strong>${escapeHtml(site.runtime_type === 'node' ? site.node_entry : site.runtime_type === 'proxy' ? site.proxy_target : site.entry_file)}</strong></div>
+        <div class="meta-cell"><span>Entry</span><strong>${escapeHtml(site.runtime_type === 'node' ? site.node_entry : site.runtime_type === 'proxy' ? site.proxy_target : site.runtime_type === 'static' ? site.entry_file : site.runtime_type === 'compose' ? `${site.compose_file} · ${site.compose_service}` : site.start_command || site.container_image || site.runtime_preset || 'managed runtime')}</strong></div>
         <div class="meta-cell"><span>Protection</span><strong>${site.domain_only ? 'Domain only · ' : ''}${site.firewall_enabled ? `${escapeHtml(site.firewall?.mode || 'local')} firewall · ` : ''}${site.cloudflareTunnel?.enabled ? `Tunnel ${site.cloudflareTunnel.connected ? 'online' : 'enabled'} · ` : ''}${site.cloudflare_enabled ? 'Cloudflare DNS · ' : ''}${site.ssl_enabled ? 'SSL' : protocol.toUpperCase()}</strong></div>
       </div>
       ${site.runtime.error ? `<p class="site-error">${escapeHtml(site.runtime.error)}</p>` : ''}
       <div class="site-actions">
         <button class="button ${site.runtime.running ? 'danger' : 'primary'}" data-action="toggle" type="button">${site.runtime.running ? 'Stop' : 'Start'}</button>
-        ${site.runtime_type === 'node' && site.runtime.running ? '<button class="button secondary" data-action="restart" type="button">Restart</button>' : ''}
+        ${site.runtime_type !== 'static' && site.runtime_type !== 'proxy' && site.runtime.running ? '<button class="button secondary" data-action="restart" type="button">Restart</button>' : ''}
         <button class="button secondary" data-action="files" type="button">Files</button>
         <button class="button secondary site-menu-trigger" data-action-menu type="button" aria-haspopup="menu" aria-expanded="false">More</button>
       </div>
@@ -55,7 +55,7 @@ function siteActionButtons(site) {
     <button data-action="content" type="button" role="menuitem">Replace all files</button>
     <button data-action="tools" type="button" role="menuitem">Snapshots & security scan</button>
     ${state.user.role === 'admin' ? '<button data-action="operations" type="button" role="menuitem">Deployment operations</button>' : ''}
-    ${site.runtime_type === 'node' ? '<button data-action="install" type="button" role="menuitem">Run npm install</button>' : ''}
+    ${((site.runtime_type === 'node' && site.runtime_isolation !== 'docker') || (site.runtime_type === 'process' && ['node', 'npm'].includes(site.runtime_preset))) ? '<button data-action="install" type="button" role="menuitem">Run npm install</button>' : ''}
     ${state.user.role === 'admin' && site.domain ? '<button data-action="cloudflare" type="button" role="menuitem">Sync Cloudflare DNS</button><button data-action="cloudflare-firewall" type="button" role="menuitem">Sync Cloudflare firewall</button><button data-action="certificate" type="button" role="menuitem">Issue / renew SSL</button><button data-action="certificate-wildcard" type="button" role="menuitem">Issue wildcard SSL</button>' : ''}
     <button class="danger-text" data-action="delete" type="button" role="menuitem">Delete site</button>`;
 }
@@ -121,17 +121,38 @@ function updateRuntimeFields() {
   const runtime = $('#site-runtime').value;
   const node = runtime === 'node';
   const proxy = runtime === 'proxy';
-  $('#static-fields').hidden = node || proxy;
+  const generic = ['process', 'container', 'compose'].includes(runtime);
+  $('#static-fields').hidden = runtime !== 'static';
   $('#node-fields').hidden = !node;
+  $('#generic-runtime-fields').hidden = !generic;
   $('#proxy-fields').hidden = !proxy;
   $('#build-fields').hidden = proxy || (!$('#site-id').value && ($('#site-source').value || 'upload') !== 'git');
   $('#site-entry').required = runtime === 'static';
-  $('#site-node-entry').required = node;
+  $('#site-node-entry').required = node && !$('#site-start-command').value.trim();
   $('#site-proxy-target').required = proxy && !$('#site-id').value;
+  const container = runtime === 'container';
+  const compose = runtime === 'compose';
+  const processRuntime = runtime === 'process';
+  $('#site-runtime-preset-row').hidden = !processRuntime;
+  $('#site-start-command-row').hidden = !processRuntime;
+  $('#site-port-env-row').hidden = !processRuntime;
+  $('#site-working-directory-row').hidden = compose;
+  $('#site-container-mode-row').hidden = !container;
+  $('#site-container-port-row').hidden = !(container || compose);
+  const mode = $('#site-container-mode').value;
+  $('#site-dockerfile-path-row').hidden = !container || mode !== 'dockerfile';
+  $('#site-buildpack-builder-row').hidden = !container || mode !== 'buildpack';
+  $('#site-compose-file-row').hidden = !compose;
+  $('#site-compose-service-row').hidden = !compose;
+  $('#site-container-runtime-note').hidden = !(container || compose);
   updateIsolationFields();
 }
 
 $('#site-runtime').addEventListener('change', updateRuntimeFields);
+$('#site-container-mode').addEventListener('change', updateRuntimeFields);
+$('#site-start-command').addEventListener('input', updateRuntimeFields);
+$('#site-container-mode').addEventListener('change', updateRuntimeFields);
+$('#site-runtime-preset').addEventListener('change', updateRuntimeFields);
 
 function clearUpload(kind) {
   state.uploads[kind] = null;
@@ -321,6 +342,13 @@ function applySiteTemplate(template) {
     next: { source: 'git', runtime: 'node', nodeEntry: '.next/standalone/server.js', install: 'npm ci', build: 'npm run build', output: '' },
     node: { source: 'git', runtime: 'node', nodeEntry: 'server.js', install: 'npm ci', build: '', output: '' },
     hugo: { source: 'git', runtime: 'static', entry: 'index.html', install: '', build: 'hugo --minify', output: 'public' },
+    fastapi: { source: 'git', runtime: 'process', runtimePreset: 'fastapi', startCommand: 'uvicorn app:app --host 0.0.0.0 --port $PORT', install: 'pip install -r requirements.txt', build: '', output: '' },
+    django: { source: 'git', runtime: 'process', runtimePreset: 'django', startCommand: 'gunicorn --bind 0.0.0.0:$PORT project.wsgi:application', install: 'pip install -r requirements.txt', build: '', output: '' },
+    bun: { source: 'git', runtime: 'process', runtimePreset: 'bun', startCommand: 'bun run start', install: 'bun install --frozen-lockfile', build: '', output: '' },
+    deno: { source: 'git', runtime: 'process', runtimePreset: 'deno', startCommand: 'deno task start', install: '', build: '', output: '' },
+    dockerfile: { source: 'git', runtime: 'container', containerMode: 'dockerfile', install: '', build: '', output: '' },
+    compose: { source: 'git', runtime: 'compose', composeFile: 'compose.yml', composeService: 'app', install: '', build: '', output: '' },
+    custom: { source: 'git', runtime: 'process', runtimePreset: 'custom', startCommand: '', install: '', build: '', output: '' },
     proxy: { source: 'proxy', runtime: 'proxy', install: '', build: '', output: '' }
   };
   const preset = presets[template];
@@ -330,6 +358,11 @@ function applySiteTemplate(template) {
   $('#site-runtime').value = preset.runtime;
   if (preset.entry) $('#site-entry').value = preset.entry;
   if (preset.nodeEntry) $('#site-node-entry').value = preset.nodeEntry;
+  if (preset.runtimePreset) $('#site-runtime-preset').value = preset.runtimePreset;
+  if (preset.startCommand !== undefined) $('#site-start-command').value = preset.startCommand;
+  if (preset.containerMode) $('#site-container-mode').value = preset.containerMode;
+  if (preset.composeFile) $('#site-compose-file').value = preset.composeFile;
+  if (preset.composeService) $('#site-compose-service').value = preset.composeService;
   $('#site-install-command').value = preset.install;
   $('#site-build-command').value = preset.build;
   $('#site-build-output').value = preset.output;
@@ -391,6 +424,16 @@ function openNewSite() {
   $('#site-host').value = '127.0.0.1';
   $('#site-entry').value = 'index.html';
   $('#site-node-entry').value = 'server.js';
+  $('#site-runtime-preset').value = 'custom';
+  $('#site-start-command').value = '';
+  $('#site-runtime-port-env').value = 'PORT';
+  $('#site-working-directory').value = '.';
+  $('#site-container-mode').value = 'image';
+  $('#site-container-port').value = '3000';
+  $('#site-dockerfile-path').value = 'Dockerfile';
+  $('#site-buildpack-builder').value = '';
+  $('#site-compose-file').value = 'compose.yaml';
+  $('#site-compose-service').value = 'app';
   $('#site-proxy-target').value = '';
   $('#site-proxy-host-header').value = '';
   $('#site-proxy-timeout').value = '30000';
@@ -415,6 +458,18 @@ function openNewSite() {
   $('#site-csp').value = '';
   $('#site-health-path').value = '/';
   $('#site-health-interval').value = '30';
+  $('#site-health-type').value = 'http';
+  $('#site-health-command').value = '';
+  $('#site-health-status-min').value = '200';
+  $('#site-health-status-max').value = '499';
+  $('#site-readiness-type').value = 'tcp';
+  $('#site-readiness-path').value = '/';
+  $('#site-readiness-command').value = '';
+  $('#site-readiness-status-min').value = '200';
+  $('#site-readiness-status-max').value = '399';
+  $('#site-startup-timeout').value = '45';
+  $('#site-shutdown-grace').value = '10';
+  $('#site-blue-green-drain').value = '5';
   $('#site-restart-policy').value = 'on-failure';
   $('#site-max-restarts').value = '5';
   $('#site-memory-limit').value = '0';
@@ -442,6 +497,9 @@ function openNewSite() {
   $('#site-anubis-difficulty').value = '4';
   $('#site-anubis-policy').value = '';
   $('#site-release-mode').checked = false;
+  $('#site-manifest-enabled').checked = true;
+  $('#site-cloudflare-auto-sync').checked = false;
+  $('#site-approve-manifest').checked = false;
   $('#site-git-url').value = '';
   $('#site-git-branch').value = 'main';
   $('#site-preview-domain').value = '';
@@ -464,12 +522,12 @@ function openNewSite() {
 }
 
 function updateIsolationFields() {
-  const docker = $('#site-runtime-isolation').value === 'docker';
-  const nodeRuntime = $('#site-runtime').value === 'node';
-  for (const id of ['site-container-image', 'site-cpu-limit', 'site-pids-limit', 'site-outbound-network']) {
-    const field = $(`#${id}`);
-    field.disabled = !docker || !nodeRuntime;
-  }
+  const runtimeType = $('#site-runtime').value;
+  const nodeRuntime = runtimeType === 'node';
+  const managedContainer = ['container', 'compose'].includes(runtimeType) || (nodeRuntime && $('#site-runtime-isolation').value === 'docker');
+  $('#site-runtime-isolation').disabled = !nodeRuntime;
+  $('#site-container-image').disabled = !(runtimeType === 'container' || (nodeRuntime && managedContainer));
+  for (const id of ['site-cpu-limit', 'site-pids-limit', 'site-outbound-network']) $(`#${id}`).disabled = !managedContainer;
   const anubis = $('#site-anubis-enabled').checked;
   $('#site-anubis-preset').disabled = !anubis;
   $('#site-anubis-difficulty').disabled = !anubis;
@@ -501,6 +559,16 @@ function openEditSite(site) {
   $('#site-domain').value = site.domain || '';
   $('#site-entry').value = site.entry_file;
   $('#site-node-entry').value = site.node_entry;
+  $('#site-runtime-preset').value = site.runtime_preset || (site.runtime_type === 'process' ? 'custom' : site.runtime_type === 'container' ? 'image' : site.runtime_type === 'compose' ? 'compose' : site.runtime_type === 'static' ? 'static' : 'node');
+  $('#site-start-command').value = site.start_command || '';
+  $('#site-runtime-port-env').value = site.runtime_port_env || 'PORT';
+  $('#site-working-directory').value = site.working_directory || '.';
+  $('#site-container-mode').value = site.container_mode || 'image';
+  $('#site-container-port').value = site.container_port || 3000;
+  $('#site-dockerfile-path').value = site.dockerfile_path || 'Dockerfile';
+  $('#site-buildpack-builder').value = site.buildpack_builder || '';
+  $('#site-compose-file').value = site.compose_file || 'compose.yaml';
+  $('#site-compose-service').value = site.compose_service || 'app';
   $('#site-proxy-target').value = site.proxy_target || '';
   $('#site-proxy-host-header').value = site.proxy_host_header || '';
   $('#site-proxy-timeout').value = site.proxy_timeout_ms || 30000;
@@ -525,6 +593,18 @@ function openEditSite(site) {
   $('#site-csp').value = site.csp || '';
   $('#site-health-path').value = site.health_check_path || '/';
   $('#site-health-interval').value = site.health_check_interval || 30;
+  $('#site-health-type').value = site.health_check_type || 'http';
+  $('#site-health-command').value = site.health_check_command || '';
+  $('#site-health-status-min').value = site.health_check_status_min || 200;
+  $('#site-health-status-max').value = site.health_check_status_max || 499;
+  $('#site-readiness-type').value = site.readiness_type || 'tcp';
+  $('#site-readiness-path').value = site.readiness_path || '/';
+  $('#site-readiness-command').value = site.readiness_command || '';
+  $('#site-readiness-status-min').value = site.readiness_status_min || 200;
+  $('#site-readiness-status-max').value = site.readiness_status_max || 399;
+  $('#site-startup-timeout').value = site.startup_timeout_seconds || 45;
+  $('#site-shutdown-grace').value = site.shutdown_grace_seconds ?? 10;
+  $('#site-blue-green-drain').value = site.blue_green_drain_seconds ?? 5;
   $('#site-restart-policy').value = site.restart_policy || 'on-failure';
   $('#site-max-restarts').value = site.max_restarts ?? 5;
   $('#site-memory-limit').value = site.memory_limit_mb || 0;
@@ -552,6 +632,9 @@ function openEditSite(site) {
   $('#site-anubis-difficulty').value = site.anubis_difficulty || 4;
   $('#site-anubis-policy').value = site.anubis_policy || '';
   $('#site-release-mode').checked = Boolean(site.release_mode);
+  $('#site-manifest-enabled').checked = site.manifest_enabled !== false;
+  $('#site-cloudflare-auto-sync').checked = Boolean(site.cloudflare_auto_sync);
+  $('#site-approve-manifest').checked = false;
   $('#site-git-url').value = site.git_url || '';
   $('#site-git-branch').value = site.git_branch || 'main';
   $('#site-preview-domain').value = site.preview_domain || '';
@@ -578,6 +661,16 @@ function openEditSite(site) {
 function appendConfiguration(formData) {
   formData.append('name', $('#site-name').value);
   formData.append('runtimeType', $('#site-runtime').value);
+  formData.append('runtimePreset', $('#site-runtime-preset').value);
+  formData.append('startCommand', $('#site-start-command').value);
+  formData.append('runtimePortEnv', $('#site-runtime-port-env').value || 'PORT');
+  formData.append('workingDirectory', $('#site-working-directory').value || '.');
+  formData.append('containerMode', $('#site-container-mode').value);
+  formData.append('containerPort', $('#site-container-port').value || '3000');
+  formData.append('dockerfilePath', $('#site-dockerfile-path').value || 'Dockerfile');
+  formData.append('buildpackBuilder', $('#site-buildpack-builder').value);
+  formData.append('composeFile', $('#site-compose-file').value || 'compose.yaml');
+  formData.append('composeService', $('#site-compose-service').value || 'app');
   formData.append('source', $('#site-source').value || 'upload');
   formData.append('proxyTarget', $('#site-proxy-target').value);
   formData.append('proxyHostHeader', $('#site-proxy-host-header').value);
@@ -605,6 +698,18 @@ function appendConfiguration(formData) {
   formData.append('csp', $('#site-csp').value);
   formData.append('healthCheckPath', $('#site-health-path').value || '/');
   formData.append('healthCheckInterval', $('#site-health-interval').value || '30');
+  formData.append('healthCheckType', $('#site-health-type').value);
+  formData.append('healthCheckCommand', $('#site-health-command').value);
+  formData.append('healthCheckStatusMin', $('#site-health-status-min').value || '200');
+  formData.append('healthCheckStatusMax', $('#site-health-status-max').value || '499');
+  formData.append('readinessType', $('#site-readiness-type').value);
+  formData.append('readinessPath', $('#site-readiness-path').value || '/');
+  formData.append('readinessCommand', $('#site-readiness-command').value);
+  formData.append('readinessStatusMin', $('#site-readiness-status-min').value || '200');
+  formData.append('readinessStatusMax', $('#site-readiness-status-max').value || '399');
+  formData.append('startupTimeoutSeconds', $('#site-startup-timeout').value || '45');
+  formData.append('shutdownGraceSeconds', $('#site-shutdown-grace').value || '10');
+  formData.append('blueGreenDrainSeconds', $('#site-blue-green-drain').value || '5');
   formData.append('restartPolicy', $('#site-restart-policy').value);
   formData.append('maxRestarts', $('#site-max-restarts').value || '5');
   formData.append('memoryLimitMb', $('#site-memory-limit').value || '0');
@@ -629,6 +734,9 @@ function appendConfiguration(formData) {
   formData.append('anubisDifficulty', $('#site-anubis-difficulty').value || '4');
   formData.append('anubisPolicy', $('#site-anubis-policy').value);
   formData.append('releaseMode', String($('#site-release-mode').checked));
+  formData.append('manifestEnabled', String($('#site-manifest-enabled').checked));
+  formData.append('cloudflareAutoSync', String($('#site-cloudflare-auto-sync').checked));
+  formData.append('approveManifestChanges', String($('#site-approve-manifest').checked));
   formData.append('gitUrl', $('#site-git-url').value);
   formData.append('gitBranch', $('#site-git-branch').value || 'main');
   formData.append('previewDomain', $('#site-preview-domain').value);
@@ -662,6 +770,16 @@ $('#site-form').addEventListener('submit', async (event) => {
         body: {
           name: $('#site-name').value,
           runtimeType: $('#site-runtime').value,
+          runtimePreset: $('#site-runtime-preset').value,
+          startCommand: $('#site-start-command').value,
+          runtimePortEnv: $('#site-runtime-port-env').value || 'PORT',
+          workingDirectory: $('#site-working-directory').value || '.',
+          containerMode: $('#site-container-mode').value,
+          containerPort: $('#site-container-port').value || '3000',
+          dockerfilePath: $('#site-dockerfile-path').value || 'Dockerfile',
+          buildpackBuilder: $('#site-buildpack-builder').value,
+          composeFile: $('#site-compose-file').value || 'compose.yaml',
+          composeService: $('#site-compose-service').value || 'app',
           proxyTarget: $('#site-proxy-target').value,
           proxyHostHeader: $('#site-proxy-host-header').value,
           proxyTimeoutMs: $('#site-proxy-timeout').value || '30000',
@@ -688,6 +806,18 @@ $('#site-form').addEventListener('submit', async (event) => {
           csp: $('#site-csp').value,
           healthCheckPath: $('#site-health-path').value || '/',
           healthCheckInterval: $('#site-health-interval').value || '30',
+          healthCheckType: $('#site-health-type').value,
+          healthCheckCommand: $('#site-health-command').value,
+          healthCheckStatusMin: $('#site-health-status-min').value || '200',
+          healthCheckStatusMax: $('#site-health-status-max').value || '499',
+          readinessType: $('#site-readiness-type').value,
+          readinessPath: $('#site-readiness-path').value || '/',
+          readinessCommand: $('#site-readiness-command').value,
+          readinessStatusMin: $('#site-readiness-status-min').value || '200',
+          readinessStatusMax: $('#site-readiness-status-max').value || '399',
+          startupTimeoutSeconds: $('#site-startup-timeout').value || '45',
+          shutdownGraceSeconds: $('#site-shutdown-grace').value || '10',
+          blueGreenDrainSeconds: $('#site-blue-green-drain').value || '5',
           restartPolicy: $('#site-restart-policy').value,
           maxRestarts: $('#site-max-restarts').value || '5',
           memoryLimitMb: $('#site-memory-limit').value || '0',
@@ -712,6 +842,8 @@ $('#site-form').addEventListener('submit', async (event) => {
           anubisDifficulty: $('#site-anubis-difficulty').value || '4',
           anubisPolicy: $('#site-anubis-policy').value,
           releaseMode: $('#site-release-mode').checked,
+          manifestEnabled: $('#site-manifest-enabled').checked,
+          cloudflareAutoSync: $('#site-cloudflare-auto-sync').checked,
           gitUrl: $('#site-git-url').value,
           gitBranch: $('#site-git-branch').value || 'main',
           previewDomain: $('#site-preview-domain').value,
@@ -726,8 +858,9 @@ $('#site-form').addEventListener('submit', async (event) => {
       const source = $('#site-source').value || 'upload';
       if (source === 'upload') {
         if (!state.uploads.site) throw new Error('Choose a ZIP archive or project folder.');
-        const entryFile = $('#site-runtime').value === 'node' ? ($('#site-node-entry').value || 'server.js') : ($('#site-entry').value || 'index.html');
-        if (!state.uploads.site.archive && !folderContainsEntry(state.uploads.site, entryFile)) {
+        const uploadRuntime = $('#site-runtime').value;
+        const entryFile = uploadRuntime === 'node' ? ($('#site-node-entry').value || 'server.js') : ($('#site-entry').value || 'index.html');
+        if (['static', 'node'].includes(uploadRuntime) && !state.uploads.site.archive && !folderContainsEntry(state.uploads.site, entryFile)) {
           throw new Error(`The selected folder does not contain the configured entry file “${entryFile}” after removing its top-level folder.`);
         }
       }
@@ -767,7 +900,8 @@ $('#content-form').addEventListener('submit', async (event) => {
   setBusy(button, true, 'Replacing…');
   try {
     if (!selection) throw new Error('Choose a ZIP archive or project folder.');
-    const entryFile = state.contentSite?.runtime_type === 'node' ? state.contentSite.node_entry : state.contentSite?.entry_file;
+    const contentRuntime = state.contentSite?.runtime_type;
+    const entryFile = contentRuntime === 'node' ? state.contentSite.node_entry : contentRuntime === 'static' ? state.contentSite?.entry_file : '';
     if (!selection.archive && entryFile && !folderContainsEntry(selection, entryFile)) {
       throw new Error(`The selected folder does not contain this site's entry file “${entryFile}” after removing its top-level folder.`);
     }

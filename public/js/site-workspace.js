@@ -6,9 +6,14 @@ function currentWorkspaceSite() {
 
 function renderWorkspaceOverview(site) {
   const protocol = site.runtime.protocol || (site.ssl_enabled ? 'https' : 'http');
-  const entry = site.runtime_type === 'proxy' ? site.proxy_target : site.runtime_type === 'node' ? site.node_entry : site.entry_file;
+  const runtimeLabels = { static: 'Static', node: 'Node.js', process: 'Managed process', container: 'OCI container', compose: 'Docker Compose', proxy: 'Reverse proxy' };
+  const entry = site.runtime_type === 'proxy' ? site.proxy_target
+    : site.runtime_type === 'node' ? site.node_entry
+      : site.runtime_type === 'static' ? site.entry_file
+        : site.runtime_type === 'compose' ? `${site.compose_file || 'compose.yaml'} · ${site.compose_service || 'app'}`
+          : site.start_command || site.container_image || site.runtime_preset || 'Managed runtime';
   $('#site-workspace-overview').innerHTML = `<div class="workspace-overview-grid">
-    <article class="workspace-fact"><span>Runtime</span><strong>${escapeHtml(site.runtime_type === 'node' ? 'Node.js' : site.runtime_type === 'proxy' ? 'Reverse proxy' : 'Static')}</strong></article>
+    <article class="workspace-fact"><span>Runtime</span><strong>${escapeHtml(runtimeLabels[site.runtime_type] || site.runtime_type)}</strong></article>
     <article class="workspace-fact"><span>Listener</span><code>${escapeHtml(site.bind_host)}:${site.port}</code></article>
     <article class="workspace-fact"><span>Entry / upstream</span><code>${escapeHtml(entry || '—')}</code></article>
     <article class="workspace-fact"><span>Deployment</span><strong>${site.git_url ? `Git · ${escapeHtml(site.git_branch || 'main')}` : site.runtime_type === 'proxy' ? 'Proxy configuration' : 'Upload'}</strong></article>

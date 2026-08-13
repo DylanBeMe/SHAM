@@ -30,6 +30,8 @@ function loadUpdateRuntime() {
 
 (async () => {
   exposeImageDependencies();
+  const restored = await require('./backup-restore').applyPendingRestore();
+  if (restored) console.log(`Restored SHAM data from ${restored.archivePath}.`);
   let applied = null;
   let updateRuntime = loadUpdateRuntime();
   try {

@@ -2,15 +2,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { TextDecoder } = require('node:util');
-const { SITES_DIR, EDITOR_LIMIT_BYTES } = require('./config');
+const { EDITOR_LIMIT_BYTES } = require('./config');
+const { siteRoot } = require('./site-paths');
 const { safeRelativePath } = require('./validation');
 
 const RESERVED_DIRECTORIES = new Set(['node_modules', '.git', '.sham']);
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
-
-function siteRoot(site) {
-  return path.join(SITES_DIR, site.directory_name);
-}
 
 function resolveSitePath(site, input) {
   const relative = safeRelativePath(input, 'File path');

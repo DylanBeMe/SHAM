@@ -1,7 +1,7 @@
 {
   "name": "simple-hosting-and-more",
   "version": "1.0.0",
-  "description": "SHAM is a self-hosted control plane for deploying static sites, managed Node.js applications, and reverse-proxied services.",
+  "description": "SHAM is a self-hosted deployment control plane for static sites, managed processes, OCI containers, Docker Compose applications, and reverse-proxied services.",
   "main": "src/bootstrap.js",
   "type": "commonjs",
   "scripts": {
@@ -37,5 +37,8 @@
     "docker",
     "sqlite",
     "control-plane"
-  ]
+  ],
+  "bin": {
+    "sham": "bin/sham.js"
+  }
 }

@@ -4,7 +4,7 @@
 
 <h1 align="center">SHAM — Simple Hosting And More</h1>
 
-<p align="center"><strong>A self-hosted deployment and operations control plane for static sites, managed Node.js apps, and reverse-proxied services.</strong></p>
+<p align="center"><strong>A self-hosted deployment and operations control plane for static sites, managed processes, OCI containers, Docker Compose applications, and reverse-proxied services.</strong></p>
 <p align="center"><strong>Current release: 1.0.0</strong> · <strong>License: AGPL-3.0-or-later</strong></p>
 
 SHAM keeps deployments, runtime controls, security, delivery, observability, and integrations in one browser dashboard while keeping application data on infrastructure you control.
@@ -15,10 +15,11 @@ It supports:
 - Reverse-proxy sites for HTTP/S services that run elsewhere on the LAN or host.
 - Optional on-the-fly minification for HTML, CSS, JavaScript, and ES modules.
 - Optional compatibility-oriented JavaScript obfuscation with explicit risk acknowledgement, bounded static analysis, preserved public names, and automatic fallback when a transform fails.
-- Managed Node.js applications launched as `node server.js` or another configured entry file.
-- Configurable install/build commands and static build-output publication for Vite, React, Astro, and similar projects.
-- Deployment presets for Static HTML, Vite/React, Astro, Hugo, Next.js standalone, Node/Express, reverse proxy, and custom stacks.
-- Automatic or manual `npm install --omit=dev`.
+- Backward-compatible Node.js applications plus generic managed-process runtimes for npm/Node, Bun, Deno, FastAPI/Uvicorn, Django/Gunicorn, Go binaries, Java JARs, and custom commands.
+- OCI/container runtimes from prebuilt images, repository Dockerfiles, Cloud Native Buildpacks, or Nixpacks, plus administrator-controlled Docker Compose projects.
+- Configurable install/build commands, immutable candidate builds, static build-output publication for Vite/React/Astro/Hugo, and readiness-first blue/green activation.
+- Reviewed `sham.yaml`, `sham.yml`, or `sham.json` repository manifests with explicit approval when execution policy changes.
+- Automatic or manual `npm install --omit=dev` for legacy Node compatibility; Docker-isolated Node dependencies are installed inside the runtime-compatible image.
 - Per-site ports, bind addresses, custom headers, caching, SPA fallback, and domain-only access.
 - Per-site local firewall controls and optional Cloudflare WAF custom-rule synchronization.
 - File browsing, text-document editing, single-file replacement, and single-file deletion.
@@ -26,20 +27,20 @@ It supports:
 - Certbot certificate issuance and renewal.
 - Cloudflare DNS/WAF integration plus independently configurable, supervised Cloudflare Tunnel connectors per site for outbound-only ingress.
 - Installable JSON and JavaScript plugins with settings and dashboard UI extensions.
-- Multi-user authentication with administrator and user roles, TOTP, recovery codes, and WebAuthn passkeys.
+- Multi-user authentication with administrator and user roles, TOTP, recovery codes, WebAuthn passkeys, and optional OpenID Connect SSO with PKCE.
 - AES-256-GCM encryption for saved integration, plugin, and TOTP secrets, with administrator-triggered key rotation.
 - Signed plugin verification, explicit permissions, action timeouts, bounded pending work, and optional worker isolation.
 - Dependency vulnerability scanning, site snapshots, automatic rollback points, and retention limits.
-- Brotli/Gzip response compression, precompressed static assets, health checks, restart policies, crash-loop protection, memory limits, and connection limits.
+- Brotli/Gzip response compression, precompressed static assets, separate startup/readiness and liveness probes, restart policies, crash-loop protection, graceful drain/shutdown windows, memory/CPU limits, and connection limits.
 - A shared domain-routed edge proxy for ports 80/443, plus security-header and CSP presets.
-- Structured runtime logs, privacy-aware visitor retention, configurable alerts, anomaly detection, and a live performance monitor.
+- Structured line-buffered runtime logs, privacy-aware visitor retention, per-site alert rules, anomaly detection, seven-day CPU/p50/p95 history, and a live performance monitor.
 - Purple-first preset themes plus a local custom-theme editor.
 - Docker deployment with a configurable persistent storage path.
 - Optional per-site Docker isolation, atomic release deployment and rollback, Git/webhook delivery, encrypted GitHub/GitLab provider connections, deployment history, preview hostnames, encrypted environment variables and database profiles, scheduled jobs, off-host backups, Anubis anti-bot sidecars, observability exports, public status, localization, and signed SHAM updates.
 
 ## Important trust boundary
 
-SHAM can execute uploaded Node.js applications and enabled JavaScript plugins. Both are trusted server-side code and can access resources available to the SHAM process. Run SHAM as an unprivileged account, isolate it from sensitive host data, review code before enabling it, and use container or operating-system controls appropriate to your threat model.
+SHAM can execute uploaded/repository-managed process commands, build container images, operate approved Compose projects, and run enabled JavaScript plugins. Host-process runtimes and plugins are trusted server-side code and can access resources available to the SHAM process; Docker control is also a powerful host-administration boundary. Run SHAM as an unprivileged account, isolate it from sensitive host data, review code before enabling it, and use container or operating-system controls appropriate to your threat model.
 
 ## Quick start
 
@@ -104,13 +105,49 @@ export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
 docker compose -f docker-compose.yml -f docker-compose.isolation.yml up -d --build
 ```
 
-`SHAM_DOCKER_HOST_DATA_PATH` must be the absolute host path mounted at `SHAM_DATA_PATH` inside SHAM. Isolated Node.js sites run with a read-only application mount, a separate writable data directory, dropped capabilities, `no-new-privileges`, process/memory/CPU limits, and an optional internal-only Docker network. Do not mount the Docker socket into a general-purpose or multi-tenant control plane.
+`SHAM_DOCKER_HOST_DATA_PATH` must be the absolute host path mounted at `SHAM_DATA_PATH` inside SHAM. Managed container runtimes use a separate writable data directory, dropped capabilities, `no-new-privileges`, process/memory/CPU limits, and an optional internal-only Docker network. Legacy Node.js image mode additionally mounts application content read-only when appropriate. Do not mount the Docker socket into a general-purpose or multi-tenant control plane.
 
 ## Safe deployments and operations
 
 The administrator-only **Operations** workspace groups delivery, configuration, automation, backups, observability, and instance updates. Existing direct-upload sites remain compatible; every advanced feature is opt-in.
 
 On first administrator sign-in, SHAM presents a hardening checklist rather than silently assuming production readiness. Site configuration can be exported or imported as JSON without exporting secret values, and runtime logs support reusable saved filters.
+
+### Runtime drivers, presets, and repository manifests
+
+SHAM separates the public site listener from the application backend. A site uses one of five drivers: **static**, **process**, **container**, **compose**, or **proxy**. Existing `static`, `node`, and reverse-proxy records remain compatible; legacy Node.js is implemented through the process/container drivers rather than a separate orchestration path.
+
+Managed-process presets include Node.js, `npm run start`, Bun, Deno, FastAPI/Uvicorn, Django/Gunicorn, Go binaries, Java JARs, and a custom command. SHAM allocates an internal port, injects `HOST`, `PORT`, and the configured port-variable name, waits for the startup/readiness probe, then routes the public listener to that backend. Startup retries allocate a new internal port when a bind race occurs. Process and container output is line-buffered so stream chunk boundaries do not split log records.
+
+Container mode supports a prebuilt OCI image, a repository `Dockerfile`, Cloud Native Buildpacks (`pack`), or Nixpacks. Source-built candidates are built before traffic is switched. Legacy Docker-isolated Node.js projects install production dependencies inside the selected runtime image, avoiding host-glibc/container-musl native-module mismatches. Runtime environment values are passed to Docker without embedding secret plaintext in Docker CLI arguments.
+
+Compose mode is administrator-only. Every service is checked for privileged mode, host networking/PID/IPC namespaces, added capabilities, host devices, Docker socket mounts, and absolute host bind mounts. The selected service must publish its application port, preferably with a loopback/dynamic mapping such as `127.0.0.1::3000`, so release candidates and previews can coexist. Each candidate uses a unique Compose project name.
+
+Git repositories may include `sham.yaml`, `sham.yml`, or `sham.json`. The manifest can set runtime/build commands, working directory, port variable, readiness policy, shutdown/drain timing, and container/Compose settings. SHAM hashes the execution policy and returns a conflict instead of activating a commit that changes it until an administrator explicitly approves the manifest change. Example:
+
+```yaml
+build:
+  command: npm ci && npm run build
+
+runtime:
+  preset: custom
+  driver: process
+  command: npm run start
+  portEnv: PORT
+
+readiness:
+  type: http
+  path: /health
+  statusMin: 200
+  statusMax: 399
+  timeoutSeconds: 45
+
+shutdown:
+  graceSeconds: 10
+  drainSeconds: 5
+```
+
+Production activation and rollback are readiness-first: SHAM moves each build into a stable retained release path before startup, starts the candidate from that path, waits for readiness, switches the stable gateway, commits the active-release pointer, then drains and stops the previous backend. Running process/container/Compose working directories are never renamed during activation. If activation fails before metadata commit, traffic is switched back to the old backend and the failed candidate is discarded. Previews use the same runtime drivers rather than a separate Node-only launcher. On SHAM restart, stale managed process/container/Compose state is reconciled before enabled sites are started again.
 
 ### Cloudflare Tunnel
 
@@ -146,7 +183,7 @@ Jobs use bounded five-field cron expressions (`minute hour day month weekday`). 
 
 ### External backups
 
-Scheduled and manual backups can target a local path or mounted NAS, restic, S3-compatible storage, or SFTP. Restic provides repository encryption when configured with a strong password. S3 and SFTP transfers package SHAM data but rely on the destination/provider for encryption at rest; use encrypted storage or wrap the destination with restic when application-layer encryption is required. Non-interactive SFTP jobs require a dedicated unencrypted deploy key or a preconfigured SSH agent because SHAM cannot answer a key passphrase prompt. SHAM verifies locally created archives and records each result, but operators should also perform periodic restore drills.
+Scheduled and manual backups can target a local path or mounted NAS, restic, S3-compatible storage, or SFTP. Restic provides repository encryption when configured with a strong password. S3 and SFTP transfers package SHAM data but rely on the destination/provider for encryption at rest; use encrypted storage or wrap the destination with restic when application-layer encryption is required. Non-interactive SFTP jobs require a dedicated unencrypted deploy key or a preconfigured SSH agent because SHAM cannot answer a key passphrase prompt. SHAM verifies locally created archives and records each result. A successful locally cached backup can be staged for a full-instance restore from Operations; SHAM creates a fresh local safety backup first. On restart it validates archive paths, extracts into an isolated sibling staging directory, rejects links/special files and malformed SQLite data, and only then atomically swaps the validated data directory into place. If the swap/preservation step fails, SHAM restores the original directory before startup continues. Keep off-host copies and perform periodic restore drills.
 
 ### Optional Anubis anti-bot protection
 
@@ -161,6 +198,30 @@ Sites can define maintenance HTML, custom 4xx/5xx pages, path redirects, cache r
 ### Logs, alerts, metrics, and status
 
 Runtime logs support bounded search and saved filters. Audit logs can be exported by administrators. Alert destinations support generic webhooks, Slack-compatible webhooks, Discord-compatible webhooks, and local sendmail. Prometheus and OpenTelemetry exports are optional and token/header protected. The public status page is read-only and exposes only coarse availability information. English, Dutch, and German interface locales are available.
+
+Per-site performance samples retain seven days of CPU, RSS, request/error rate, p50/p95/average response latency, connections, and restart counts. Administrators can add per-site CPU, memory-percent, p95-latency, request-rate, error-rate, and traffic-multiplier rules that override the corresponding instance defaults. Health checks are run with bounded concurrency.
+
+### API tokens and CLI automation
+
+Security can create revocable bearer tokens with independent `read`, `logs:read`, `deploy`, and `sites:control` scopes. Only a SHA-256 hash is stored; the `sham_pat_…` value is shown once. Bearer-token requests use scope authorization rather than browser CSRF semantics. The bundled CLI uses `SHAM_URL` and `SHAM_TOKEN`:
+
+```bash
+export SHAM_URL=https://sham.example.com
+export SHAM_TOKEN=sham_pat_...
+sham sites
+sham deploy 12 --branch main --approve-manifest
+sham logs 12 --limit 200
+sham restart 12
+sham rollback 12 37
+```
+
+### OpenID Connect SSO
+
+Administrators can configure an OIDC issuer/client under **Instance → OIDC single sign-on** while keeping local login/MFA available for recovery. SHAM uses Authorization Code + PKCE, state/nonce replay protection, provider discovery, JWKS signature verification for RS/PS/ES algorithms, issuer/audience/authorized-party/time claim validation, encrypted client-secret storage, and optional just-in-time user provisioning with a configured local role. HTTPS endpoints are required except for loopback development, and OIDC redirects are rejected rather than followed.
+
+### Automatic Cloudflare reconciliation
+
+Instance settings can enable a bounded reconciliation interval. Sites with **automatic Cloudflare reconciliation** enabled have their proxied A record and supported firewall/WAF policy repaired from the saved SHAM configuration using the restricted Cloudflare API token and configured origin IPv4 address. Manual synchronization remains available for deliberate one-off changes.
 
 ### Safe SHAM updates
 
@@ -243,6 +304,8 @@ SHAM loads `.env` from the project root. Existing process environment variables 
 | `SHAM_EDGE_HTTPS_PORT` | `0` | Shared HTTPS/SNI edge port; `0` disables it. |
 | `SHAM_CLOUDFLARED_BIN` | `cloudflared` | Cloudflare Tunnel connector executable. The supplied Docker image includes a pinned binary. |
 | `SHAM_DOCKER_BIN` | `docker` | Docker executable used for isolated sites and Anubis sidecars. |
+| `SHAM_PACK_BIN` | `pack` | Cloud Native Buildpacks CLI used by the Buildpack container preset. |
+| `SHAM_NIXPACKS_BIN` | `nixpacks` | Nixpacks CLI used by the Nixpacks container preset. |
 | `SHAM_DOCKER_HOST_DATA_PATH` | unset | Absolute host path corresponding to `SHAM_DATA_PATH` when SHAM itself runs in Docker. |
 | `SHAM_DOCKER_INTERNAL_NETWORK` | `sham-internal` | Docker network used by isolated sites that must not have outbound internet access. The isolation overlay sets a shared internal network name. |
 | `SHAM_DOCKER_EGRESS_NETWORK` | unset | Docker network used by isolated sites with outbound access. The isolation overlay supplies a shared egress network. |
@@ -252,6 +315,7 @@ SHAM loads `.env` from the project root. Existing process environment variables 
 | `SHAM_AWS_BIN` | `aws` | AWS CLI used for S3-compatible transfers. |
 | `SHAM_SFTP_BIN` | `sftp` | SFTP executable used for remote transfers. |
 | `SHAM_ANUBIS_IMAGE` | pinned stable image | Anubis sidecar image. Keep it pinned and review policy changes before upgrading. |
+| `SHAM_HEALTH_CHECK_CONCURRENCY` | `8` | Maximum concurrent per-site liveness checks in one health sweep. |
 | `SHAM_JOB_POLL_SECONDS` | `15` | Scheduler polling interval. |
 | `SHAM_JOB_TIMEOUT_SECONDS` | `900` | Maximum scheduled-job runtime. |
 | `SHAM_BACKUP_TIMEOUT_SECONDS` | `3600` | Maximum backup runtime. |
@@ -398,8 +462,8 @@ The **Performance** page samples the SHAM process and hosted runtimes without wr
 
 - Dashboard CPU, RSS/heap memory, load, event-loop mean/p99 delay, storage use, and uptime.
 - Upload, transformation, dependency-install, dependency-scan, and snapshot queue pressure.
-- Per-site process memory, health state, connection count, restart count, request rate, response throughput, recent error percentage, and sampled average latency.
-- Configurable CPU, event-loop, disk, traffic-spike, and site-error-rate alerts.
+- Per-site CPU and memory, health state, connection count, restart count, request rate, response throughput, recent error percentage, and sampled average/p50/p95 latency, with seven-day persisted history.
+- Configurable instance alerts plus per-site CPU, memory, p95-latency, request-rate, error-rate, and traffic-multiplier alert rules.
 
 Traffic baselines use an exponentially weighted recent average and require a warm-up period. Alerts are intentionally advisory: a traffic spike can be legitimate, and operators should correlate alerts with Activity/runtime logs before blocking traffic.
 
@@ -675,7 +739,10 @@ Authentication:
 | `POST` | `/api/auth/register` | Bootstrap or open registration. |
 | `POST` | `/api/auth/login` | Start a dashboard session. |
 | `POST` | `/api/auth/logout` | End a dashboard session. |
-| `GET` | `/api/security` | Current MFA/passkey status. |
+| `GET` | `/api/auth/oidc/start` | Start configured OIDC Authorization Code + PKCE login. |
+| `GET` | `/api/auth/oidc/callback` | Complete OIDC login. |
+| `GET` | `/api/security` | Current MFA/passkey/API-token status. |
+| `POST/DELETE` | `/api/security/api-tokens` | Create or revoke scoped API tokens. |
 | `POST` | `/api/security/totp/*` | Configure, enable, disable, or recover TOTP. |
 | `POST` | `/api/security/passkeys/*` | Register and verify passkeys. |
 | `DELETE` | `/api/security/passkeys/:id` | Delete a passkey with password confirmation. |
@@ -701,6 +768,8 @@ Sites and files:
 | `POST/DELETE` | `/api/sites/:id/firewall/ban-ip` | Add or remove an exact IP from a site's firewall block list. |
 | `PATCH` | `/api/sites/:id/pin` | Pin or unpin a site so favorites sort first. |
 | `GET` | `/api/performance` | Authenticated live performance history and alerts. |
+| `GET` | `/api/sites/:id/performance/history` | Read persisted per-site CPU/latency/traffic history. |
+| `GET/PUT` | `/api/sites/:id/alert-rules` | Read or update per-site alert thresholds. |
 | `GET/POST` | `/api/sites/:id/snapshots` | List or create restore points. |
 | `POST` | `/api/sites/:id/snapshots/:snapshotId/restore` | Restore a snapshot with an automatic rollback point. |
 | `GET/POST` | `/api/sites/:id/dependency-scan` | Read or run dependency security scans. |
@@ -721,6 +790,8 @@ Operations:
 | `POST` | `/api/sites/:id/environment/:key/reveal` | Reveal one saved secret after administrator password confirmation. |
 | `GET/POST` | `/api/sites/:id/jobs` | Manage scheduled jobs. |
 | `POST` | `/api/admin/backups/run` | Run an external backup immediately. |
+| `POST` | `/api/admin/backups/:id/restore` | Create a safety backup and stage a verified full-instance restore. |
+| `GET` | `/api/admin/backups/restore-status` | Read pending full-instance restore state. |
 | `GET` | `/api/runtime-logs/search` | Search bounded structured logs. |
 | `GET` | `/api/admin/audit/export` | Export the administrator audit log. |
 | `GET` | `/metrics` | Optional token-protected Prometheus metrics. |

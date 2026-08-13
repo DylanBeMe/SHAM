@@ -1,5 +1,8 @@
 'use strict';
 
+const path = require('node:path');
+const { BACKUPS_DIR } = require('../config');
+const { stageBackupRestore, MARKER: RESTORE_MARKER } = require('../backup-restore');
 const { providerStatuses, saveProviderToken, listProviderRepositories } = require('../git-providers');
 
 function registerOperationsRoutes(ctx) {
@@ -161,7 +164,8 @@ function authenticateDeployWebhook(req, res, next) {
         installDependencies: bool(req.body.installDependencies, site.install_dependencies),
         installCommand: req.body.installCommand ?? site.install_command,
         buildCommand: req.body.buildCommand ?? site.build_command,
-        buildOutputDir: req.body.buildOutputDir ?? site.build_output_dir
+        buildOutputDir: req.body.buildOutputDir ?? site.build_output_dir,
+        approveManifestChanges: bool(req.body.approveManifestChanges, false)
       });
       let webhook = null;
       let webhookWarning = null;
@@ -170,7 +174,10 @@ function authenticateDeployWebhook(req, res, next) {
       const warning = [release.warning, webhookWarning].filter(Boolean).join(' ') || null;
       recordAudit(req.user.id, 'site.git.deploy', { siteId: site.id, releaseId: release.id, branch: req.body.branch || site.git_branch, webhook: webhook?.action || null, warning: Boolean(warning) });
       res.json({ release, site: manager.decorate(manager.getSite(site.id)), webhook, warning });
-    } catch (error) { res.status(400).json({ error: error.message }); }
+    } catch (error) {
+      if (error.code === 'SHAM_MANIFEST_APPROVAL_REQUIRED') return res.status(409).json({ error: error.message, code: error.code, manifest: error.manifest });
+      res.status(400).json({ error: error.message });
+    }
   });
 
   app.post('/api/sites/:id/releases/:releaseId/rollback', requireAuth, requireAdmin, async (req, res) => {
@@ -438,6 +445,25 @@ function authenticateDeployWebhook(req, res, next) {
   });
 
   app.post('/api/admin/backups/run', requireAuth, requireAdmin, async (req, res) => { try { const backup = await operationsManager.createBackup({ provider: req.body.provider || null }); recordAudit(req.user.id, 'backup.run', backup); res.json({ backup }); } catch (error) { res.status(400).json({ error: error.message }); } });
+
+
+  app.get('/api/admin/backups/restore-status', requireAuth, requireAdmin, (_req, res) => {
+    res.json({ pending: require('node:fs').existsSync(RESTORE_MARKER) });
+  });
+
+  app.post('/api/admin/backups/:id/restore', requireAuth, requireAdmin, stepUpLimiter, async (req, res) => {
+    try {
+      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+      if (!(await verifyPassword(String(req.body.password || ''), user.password_salt, user.password_hash))) return res.status(401).json({ error: 'Password confirmation failed.' });
+      const backup = db.prepare("SELECT id, filename, status FROM backup_runs WHERE id = ?").get(Number(req.params.id));
+      if (!backup || backup.status !== 'success') return res.status(404).json({ error: 'A successful backup run with that ID was not found.' });
+      if (!/^sham-backup-.*\.tar\.gz$/.test(String(backup.filename || ''))) throw new Error('Backup filename is invalid.');
+      const safetyBackup = await operationsManager.createBackup({ provider: 'local', skipRetention: true });
+      const staged = await stageBackupRestore(path.join(BACKUPS_DIR, backup.filename), { requestedBy: req.user.id, backupRunId: backup.id });
+      recordAudit(req.user.id, 'backup.restore.stage', { backupId: backup.id, filename: backup.filename, safetyBackupId: safetyBackup.id });
+      res.json({ restore: staged, safetyBackup, message: 'Restore staged. A fresh safety backup was created first. Restart SHAM to apply the selected backup before the database is opened.' });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
 
   app.post('/api/admin/alert-destinations', requireAuth, requireAdmin, (req, res) => { try { const id = operationsManager.saveAlertDestination(req.body); recordAudit(req.user.id, 'alert-destination.save', { id }); res.status(req.body.id ? 200 : 201).json({ id, destinations: operationsManager.listAlertDestinations() }); } catch (error) { res.status(400).json({ error: error.message }); } });
   app.post('/api/admin/alert-destinations/:id/test', requireAuth, requireAdmin, async (req, res) => { try { await operationsManager.testAlertDestination(Number(req.params.id)); res.json({ sent: true }); } catch (error) { res.status(400).json({ error: error.message }); } });

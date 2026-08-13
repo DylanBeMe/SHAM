@@ -1,5 +1,8 @@
 'use strict';
 
+const { siteRoot, legacySiteRoot } = require('../site-paths');
+const { RELEASES_DIR } = require('../config');
+
 function registerSiteRoutes(ctx) {
   const {
     app, requireAuth, requireAdmin, db, manager, cloudflareTunnels, net, recordAudit, performanceMonitor,
@@ -122,6 +125,63 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
     res.status(204).end();
   });
 
+
+  app.get('/api/sites/:id/performance/history', requireAuth, (req, res) => {
+    const site = getSiteOr404(req, res);
+    if (!site) return;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 720, 1), 2016);
+    const rows = db.prepare(`
+      SELECT sampled_at AS sampledAt, cpu_percent AS cpuPercent, rss_bytes AS rssBytes,
+        request_rate AS requestRate, error_rate AS errorRate, avg_response_ms AS averageResponseMs,
+        p50_response_ms AS p50ResponseMs, p95_response_ms AS p95ResponseMs,
+        connections, restarts
+      FROM site_performance_samples
+      WHERE site_id = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(site.id, limit).reverse();
+    res.json({ siteId: site.id, history: rows });
+  });
+
+  app.get('/api/sites/:id/alert-rules', requireAuth, (req, res) => {
+    const site = getSiteOr404(req, res);
+    if (!site) return;
+    const rules = db.prepare(`
+      SELECT id, kind, threshold, severity, enabled, created_at AS createdAt, updated_at AS updatedAt
+      FROM alert_rules WHERE site_id = ? ORDER BY kind
+    `).all(site.id).map((row) => ({ ...row, enabled: Boolean(row.enabled) }));
+    res.json({ siteId: site.id, rules });
+  });
+
+  app.put('/api/sites/:id/alert-rules', requireAuth, requireAdmin, (req, res) => {
+    const site = getSiteOr404(req, res);
+    if (!site) return;
+    const rows = Array.isArray(req.body?.rules) ? req.body.rules : [];
+    if (rows.length > 20) return res.status(400).json({ error: 'A site can define at most 20 alert rules.' });
+    const allowedKinds = new Set(['cpu_percent', 'error_percent', 'p95_response_ms', 'request_rate', 'memory_percent', 'traffic_multiplier']);
+    const allowedSeverity = new Set(['warning', 'critical']);
+    const normalized = [];
+    for (const row of rows) {
+      const kind = String(row?.kind || '').trim();
+      const threshold = Number(row?.threshold);
+      const severity = String(row?.severity || 'warning').trim();
+      if (!allowedKinds.has(kind)) return res.status(400).json({ error: `Unsupported alert rule: ${kind || 'empty kind'}.` });
+      if (!Number.isFinite(threshold) || threshold < 0) return res.status(400).json({ error: `Alert threshold for ${kind} must be a non-negative number.` });
+      if (!allowedSeverity.has(severity)) return res.status(400).json({ error: `Alert severity for ${kind} must be warning or critical.` });
+      const maximum = kind === 'p95_response_ms' ? 600000 : kind === 'request_rate' ? 1000000 : kind === 'traffic_multiplier' ? 1000 : 1000;
+      if (threshold > maximum) return res.status(400).json({ error: `Alert threshold for ${kind} is too large.` });
+      normalized.push({ kind, threshold, severity, enabled: row.enabled !== false });
+    }
+    const replace = db.transaction(() => {
+      db.prepare('DELETE FROM alert_rules WHERE site_id = ?').run(site.id);
+      const statement = db.prepare('INSERT INTO alert_rules (site_id, kind, threshold, severity, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)');
+      for (const row of normalized) statement.run(site.id, row.kind, row.threshold, row.severity, row.enabled ? 1 : 0);
+    });
+    replace();
+    recordAudit(req.user.id, 'site.alert-rules.update', { siteId: site.id, rules: normalized.map(({ kind, threshold, severity, enabled }) => ({ kind, threshold, severity, enabled })) });
+    res.json({ siteId: site.id, rules: normalized });
+  });
+
   app.get('/api/runtime-logs', requireAuth, (req, res) => {
     const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 2000);
     const siteId = Number(req.query.siteId);
@@ -151,6 +211,8 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       const source = config.runtime_type === 'proxy' ? 'proxy' : String(req.body.source || 'upload').toLowerCase();
       if (!['upload', 'git', 'proxy'].includes(source)) throw new Error('Deployment source must be upload, git, or proxy.');
       if (source === 'git' && req.user.role !== 'admin') throw new Error('Git deployments require an administrator account.');
+      if (config.runtime_type === 'compose' && req.user.role !== 'admin') throw new Error('Docker Compose runtimes require an administrator account.');
+      if (config.runtime_type === 'container' && ['dockerfile', 'buildpack', 'nixpacks'].includes(config.container_mode) && req.user.role !== 'admin') throw new Error('Source-built container runtimes require an administrator account.');
       if (source === 'git' && !config.git_url) throw new Error('Choose a Git repository before deploying from Git.');
       checkPort(config.port);
       if (config.ssl_enabled && (!config.domain || !hasCertificate(config.domain))) {
@@ -172,26 +234,30 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
 
       const result = db.prepare(`
         INSERT INTO sites (
-          name, slug, directory_name, bind_host, port, runtime_type, proxy_target, proxy_host_header, proxy_timeout_ms,
+          name, slug, directory_name, bind_host, port, runtime_type, runtime_preset, start_command, runtime_port_env, working_directory, proxy_target, proxy_host_header, proxy_timeout_ms,
           install_command, build_command, build_output_dir, entry_file, node_entry,
           install_dependencies, minify, obfuscate, obfuscation_risk_acknowledged,
           domain_only, spa_fallback, cache_seconds, headers_json, enabled, domain,
           ssl_enabled, cloudflare_enabled, firewall_enabled, firewall_json, compression,
-          security_preset, csp, health_check_path, health_check_interval, restart_policy,
+          security_preset, csp, health_check_path, health_check_interval, health_check_type, health_check_command, health_check_status_min, health_check_status_max, restart_policy,
           max_restarts, memory_limit_mb, max_connections, edge_enabled, runtime_isolation,
-          container_image, cpu_limit, pids_limit, outbound_network, anubis_enabled,
+          container_image, container_mode, container_port, dockerfile_path, compose_file, compose_service, buildpack_builder,
+          readiness_type, readiness_path, readiness_command, readiness_status_min, readiness_status_max, startup_timeout_seconds, shutdown_grace_seconds, blue_green_drain_seconds, manifest_enabled, cloudflare_auto_sync,
+          cpu_limit, pids_limit, outbound_network, anubis_enabled,
           anubis_preset, anubis_difficulty, anubis_policy, maintenance_enabled,
           maintenance_html, redirects_json, error_pages_json, cache_rules_json,
           release_mode, git_url, git_branch, preview_domain, created_by
         ) VALUES (
-          @name, @slug, @directoryName, @bindHost, @port, @runtimeType, @proxyTarget, @proxyHostHeader, @proxyTimeoutMs,
+          @name, @slug, @directoryName, @bindHost, @port, @runtimeType, @runtimePreset, @startCommand, @runtimePortEnv, @workingDirectory, @proxyTarget, @proxyHostHeader, @proxyTimeoutMs,
           @installCommand, @buildCommand, @buildOutputDir, @entryFile, @nodeEntry,
           @installDependencies, @minify, @obfuscate, @obfuscationRiskAcknowledged,
           @domainOnly, @spaFallback, @cacheSeconds, @headersJson, 0, @domain,
           @sslEnabled, @cloudflareEnabled, @firewallEnabled, @firewallJson, @compression,
-          @securityPreset, @csp, @healthCheckPath, @healthCheckInterval, @restartPolicy,
+          @securityPreset, @csp, @healthCheckPath, @healthCheckInterval, @healthCheckType, @healthCheckCommand, @healthCheckStatusMin, @healthCheckStatusMax, @restartPolicy,
           @maxRestarts, @memoryLimitMb, @maxConnections, @edgeEnabled, @runtimeIsolation,
-          @containerImage, @cpuLimit, @pidsLimit, @outboundNetwork, @anubisEnabled,
+          @containerImage, @containerMode, @containerPort, @dockerfilePath, @composeFile, @composeService, @buildpackBuilder,
+          @readinessType, @readinessPath, @readinessCommand, @readinessStatusMin, @readinessStatusMax, @startupTimeoutSeconds, @shutdownGraceSeconds, @blueGreenDrainSeconds, @manifestEnabled, @cloudflareAutoSync,
+          @cpuLimit, @pidsLimit, @outboundNetwork, @anubisEnabled,
           @anubisPreset, @anubisDifficulty, @anubisPolicy, @maintenanceEnabled,
           @maintenanceHtml, @redirectsJson, @errorPagesJson, @cacheRulesJson,
           @releaseMode, @gitUrl, @gitBranch, @previewDomain, @createdBy
@@ -203,6 +269,10 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
         bindHost: config.bind_host,
         port: config.port,
         runtimeType: config.runtime_type,
+        runtimePreset: config.runtime_preset,
+        startCommand: config.start_command,
+        runtimePortEnv: config.runtime_port_env,
+        workingDirectory: config.working_directory,
         proxyTarget: config.proxy_target,
         proxyHostHeader: config.proxy_host_header,
         proxyTimeoutMs: config.proxy_timeout_ms,
@@ -229,6 +299,10 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
         csp: config.csp,
         healthCheckPath: config.health_check_path,
         healthCheckInterval: config.health_check_interval,
+        healthCheckType: config.health_check_type,
+        healthCheckCommand: config.health_check_command,
+        healthCheckStatusMin: config.health_check_status_min,
+        healthCheckStatusMax: config.health_check_status_max,
         restartPolicy: config.restart_policy,
         maxRestarts: config.max_restarts,
         memoryLimitMb: config.memory_limit_mb,
@@ -236,6 +310,22 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
         edgeEnabled: Number(config.edge_enabled),
         runtimeIsolation: config.runtime_isolation,
         containerImage: config.container_image,
+        containerMode: config.container_mode,
+        containerPort: config.container_port,
+        dockerfilePath: config.dockerfile_path,
+        composeFile: config.compose_file,
+        composeService: config.compose_service,
+        buildpackBuilder: config.buildpack_builder,
+        readinessType: config.readiness_type,
+        readinessPath: config.readiness_path,
+        readinessCommand: config.readiness_command,
+        readinessStatusMin: config.readiness_status_min,
+        readinessStatusMax: config.readiness_status_max,
+        startupTimeoutSeconds: config.startup_timeout_seconds,
+        shutdownGraceSeconds: config.shutdown_grace_seconds,
+        blueGreenDrainSeconds: config.blue_green_drain_seconds,
+        manifestEnabled: Number(config.manifest_enabled),
+        cloudflareAutoSync: Number(config.cloudflare_auto_sync),
         cpuLimit: config.cpu_limit,
         pidsLimit: config.pids_limit,
         outboundNetwork: Number(config.outbound_network),
@@ -265,7 +355,8 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
           installDependencies: config.install_dependencies,
           installCommand: config.install_command,
           buildCommand: config.build_command,
-          buildOutputDir: config.build_output_dir
+          buildOutputDir: config.build_output_dir,
+          approveManifestChanges: bool(req.body.approveManifestChanges, false)
         });
       } else {
         const deploymentId = operationsManager.recordDeployment(id, {
@@ -340,8 +431,9 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       }
       const required = requiredSiteFile(config);
       if (required) {
-        const entryPath = path.join(SITES_DIR, site.directory_name, ...required.split('/'));
-        if (!realFileInside(path.join(SITES_DIR, site.directory_name), entryPath)) {
+        const root = siteRoot(site);
+        const entryPath = path.join(root, ...required.split('/'));
+        if (!realFileInside(root, entryPath)) {
           throw new Error(`Required file “${required}” does not exist in this website.`);
         }
       }
@@ -436,6 +528,9 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
     const wasRunning = manager.statusFor(site.id).running;
     let rollbackSnapshot = null;
     try {
+      const npmLikeHostRuntime = (site.runtime_type === 'node' && site.runtime_isolation !== 'docker')
+        || (site.runtime_type === 'process' && ['node', 'npm'].includes(site.runtime_preset));
+      if (!npmLikeHostRuntime) throw new Error('Host npm install is only available for host-based Node/npm runtimes. Container runtimes install dependencies during their image build.');
       rollbackSnapshot = await snapshotManager.create(site, 'Automatic pre-npm-install rollback');
       if (wasRunning) await manager.stop(site.id);
       try {
@@ -473,7 +568,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       if (wasRunning) await manager.stop(site.id);
       await installUploadAsync({
         ...uploadParts(req),
-        destination: path.join(SITES_DIR, site.directory_name),
+        destination: siteRoot(site),
         entryFile: requiredSiteFile(site),
         maxBytes: UPLOAD_LIMIT_BYTES
       });
@@ -533,7 +628,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
     try {
       const result = await writeTextFileAsync(site, req.body.path, req.body.content);
       recordAudit(req.user.id, 'site.file.write', { id: site.id, path: result.path, size: result.size });
-      res.json({ file: result, restartRecommended: site.runtime_type === 'node' && manager.statusFor(site.id).running });
+      res.json({ file: result, restartRecommended: ['node', 'process', 'container', 'compose'].includes(site.runtime_type) && manager.statusFor(site.id).running });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
@@ -545,7 +640,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       const destination = req.body.path || req.file.originalname;
       const result = await replaceSingleFileFromPathAsync(site, destination, req.file.path, req.file.size);
       recordAudit(req.user.id, 'site.file.replace', { id: site.id, path: result.path, size: result.size });
-      res.json({ file: result, restartRecommended: site.runtime_type === 'node' && manager.statusFor(site.id).running });
+      res.json({ file: result, restartRecommended: ['node', 'process', 'container', 'compose'].includes(site.runtime_type) && manager.statusFor(site.id).running });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
@@ -592,9 +687,12 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
     if (!site) return;
     const wasRunning = manager.statusFor(site.id).running;
     const tunnelWasEnabled = cloudflareTunnels.status(site.id).enabled;
-    const root = path.join(SITES_DIR, site.directory_name);
+    const root = legacySiteRoot(site);
+    const releaseRoot = path.join(RELEASES_DIR, String(site.id));
     const trash = `${root}.delete-${crypto.randomUUID()}`;
+    const releaseTrash = `${releaseRoot}.delete-${crypto.randomUUID()}`;
     let filesStaged = false;
+    let releasesStaged = false;
     try {
       await manager.stop(site.id);
       await cloudflareTunnels.stop(site.id);
@@ -606,6 +704,12 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
+      try {
+        await fs.promises.rename(releaseRoot, releaseTrash);
+        releasesStaged = true;
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
       db.prepare('DELETE FROM sites WHERE id = ?').run(site.id);
       manager.forgetSite(site.id);
       edgeProxy.invalidateSiteCache();
@@ -614,9 +718,18 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
           if (cleanupError) manager.log(null, 'error', `Could not remove deleted site data for ${site.name}: ${cleanupError.message}`, { deletedSiteId: site.id });
         });
       }
+      if (releasesStaged) {
+        fs.rm(releaseTrash, { recursive: true, force: true }, (cleanupError) => {
+          if (cleanupError) manager.log(null, 'error', `Could not remove deleted release data for ${site.name}: ${cleanupError.message}`, { deletedSiteId: site.id });
+        });
+      }
       recordAudit(req.user.id, 'site.delete', { id: site.id, name: site.name });
       res.status(204).end();
     } catch (error) {
+      if (releasesStaged) {
+        try { await fs.promises.rename(releaseTrash, releaseRoot); }
+        catch (restoreError) { manager.log(site.id, 'error', `Could not restore release files after a failed deletion: ${restoreError.message}`); }
+      }
       if (filesStaged) {
         try { await fs.promises.rename(trash, root); }
         catch (restoreError) { manager.log(site.id, 'error', `Could not restore site files after a failed deletion: ${restoreError.message}`); }
@@ -643,7 +756,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
     const site = getSiteOr404(req, res);
     if (!site) return;
     try {
-      if (site.runtime_type !== 'node') throw new Error('Dependency scanning is available for Node.js sites only.');
+      if (site.runtime_type === 'proxy') throw new Error('Dependency scanning requires a local project directory.');
       const result = await dependencyScanner.scan(site);
       recordAudit(req.user.id, 'site.dependencies.scan', { id: site.id, vulnerabilities: result.vulnerabilities?.total || 0 });
       res.json({ result });

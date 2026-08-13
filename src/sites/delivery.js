@@ -1,7 +1,7 @@
 'use strict';
 
 const { CoreSiteManager } = require('./core');
-const { fs, path, crypto, http, https, net, spawn, execFile, Worker, zlib, promisify, express, httpProxy, SITES_DIR, NODE_START_TIMEOUT_MS, NPM_INSTALL_TIMEOUT_MS, NPM_INSTALL_WORKERS, NPM_INSTALL_QUEUE_LIMIT, HTTP_REQUEST_TIMEOUT_MS, STATS_FLUSH_INTERVAL_MS, VISITOR_RETENTION_DAYS, MINIFY_MAX_BYTES, MINIFY_CACHE_BYTES, MINIFY_WORKERS, MINIFY_QUEUE_LIMIT, COMPRESSION_WORKERS, COMPRESSION_QUEUE_LIMIT, VISITOR_PENDING_BUCKETS, FIREWALL_RATE_LIMIT_BUCKETS, TRUSTED_EDGE_PROXIES, DOCKER_BIN, DOCKER_INTERNAL_NETWORK, DOCKER_EGRESS_NETWORK, SITE_DATA_DIR, JWT_SECRET, safeRelativePath, certbotPaths, hasCertificate, runtimeEnvironment, buildEnvironment, operatorEnvironment, classifyClient, gzipAsync, brotliAsync, execFileAsync, COMPRESSIBLE_EXTENSIONS, INTERNAL_EDGE_TOKEN, REQUEST_IDENTITY, appendTail, cacheEntryBytes, responseChunkBytes, processOptions, terminateChild, ensureDockerInternalNetwork, terminateAndWait, realFileInside, realFileInsideAsync, hostForUrl, normalizeIp, requestHostname, TRUSTED_EDGE_RANGES, trustedEdgePeers, trustedEdgePeer, requestIdentity, buildIpBlockList, ipMatchesList, hydrateSite, listen, closeServer, freePort, waitForPort, siteIsolation, dockerContainerName } = require('./shared');
+const { fs, path, crypto, http, https, net, spawn, execFile, Worker, zlib, promisify, express, httpProxy, SITES_DIR, NODE_START_TIMEOUT_MS, NPM_INSTALL_TIMEOUT_MS, NPM_INSTALL_WORKERS, NPM_INSTALL_QUEUE_LIMIT, HTTP_REQUEST_TIMEOUT_MS, STATS_FLUSH_INTERVAL_MS, VISITOR_RETENTION_DAYS, MINIFY_MAX_BYTES, MINIFY_CACHE_BYTES, MINIFY_WORKERS, MINIFY_QUEUE_LIMIT, COMPRESSION_WORKERS, COMPRESSION_QUEUE_LIMIT, VISITOR_PENDING_BUCKETS, FIREWALL_RATE_LIMIT_BUCKETS, TRUSTED_EDGE_PROXIES, DOCKER_BIN, DOCKER_INTERNAL_NETWORK, DOCKER_EGRESS_NETWORK, SITE_DATA_DIR, JWT_SECRET, safeRelativePath, certbotPaths, hasCertificate, runtimeEnvironment, buildEnvironment, operatorEnvironment, classifyClient, gzipAsync, brotliAsync, execFileAsync, COMPRESSIBLE_EXTENSIONS, INTERNAL_EDGE_TOKEN, REQUEST_IDENTITY, appendTail, cacheEntryBytes, responseChunkBytes, processOptions, terminateChild, ensureDockerInternalNetwork, terminateAndWait, realFileInside, realFileInsideAsync, hostForUrl, normalizeIp, requestHostname, TRUSTED_EDGE_RANGES, trustedEdgePeers, trustedEdgePeer, requestIdentity, buildIpBlockList, ipMatchesList, hydrateSite, listen, closeServer, freePort, waitForPort, siteIsolation, dockerContainerName, siteRoot } = require('./shared');
 
 class DeliverySiteManager extends CoreSiteManager {
   publicServer(site, handler) {
@@ -368,7 +368,7 @@ class DeliverySiteManager extends CoreSiteManager {
   }
 
   async ensureDependencies(site) {
-    const root = path.join(SITES_DIR, site.directory_name);
+    const root = siteRoot(site);
     if (await this.dependenciesAreCurrent(root)) {
       this.log(site.id, 'info', 'Dependencies are already current; skipped npm install.');
       return;
@@ -412,7 +412,7 @@ class DeliverySiteManager extends CoreSiteManager {
   }
 
   async _runInstall(site) {
-    const root = path.join(SITES_DIR, site.directory_name);
+    const root = siteRoot(site);
     const packageFile = path.join(root, 'package.json');
     if (!(await realFileInsideAsync(root, packageFile))) throw new Error('A regular package.json file was not found in this website.');
     this.log(site.id, 'info', 'Running npm install --omit=dev…');

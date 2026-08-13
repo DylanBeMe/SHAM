@@ -1,7 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { SITES_DIR, DEPENDENCY_SCAN_TIMEOUT_MS, DEPENDENCY_SCAN_WORKERS, DEPENDENCY_SCAN_QUEUE_LIMIT } = require('./config');
+const { DEPENDENCY_SCAN_TIMEOUT_MS, DEPENDENCY_SCAN_WORKERS, DEPENDENCY_SCAN_QUEUE_LIMIT } = require('./config');
+const { siteRoot } = require('./site-paths');
 const { realFileInsideAsync } = require('./site-manager');
 const { buildEnvironment } = require('./process-env');
 
@@ -64,7 +65,7 @@ class DependencyScanner {
   }
 
   async _scan(site) {
-    const root = path.join(SITES_DIR, site.directory_name);
+    const root = siteRoot(site);
     const packagePath = path.join(root, 'package.json');
     if (!(await realFileInsideAsync(root, packagePath))) throw new Error('A safe package.json file was not found.');
     let packageJson;

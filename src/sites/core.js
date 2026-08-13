@@ -1,6 +1,6 @@
 'use strict';
 
-const { fs, path, crypto, http, https, net, spawn, execFile, Worker, zlib, promisify, express, httpProxy, SITES_DIR, NODE_START_TIMEOUT_MS, NPM_INSTALL_TIMEOUT_MS, NPM_INSTALL_WORKERS, NPM_INSTALL_QUEUE_LIMIT, HTTP_REQUEST_TIMEOUT_MS, STATS_FLUSH_INTERVAL_MS, VISITOR_RETENTION_DAYS, MINIFY_MAX_BYTES, MINIFY_CACHE_BYTES, MINIFY_WORKERS, MINIFY_QUEUE_LIMIT, COMPRESSION_WORKERS, COMPRESSION_QUEUE_LIMIT, VISITOR_PENDING_BUCKETS, FIREWALL_RATE_LIMIT_BUCKETS, TRUSTED_EDGE_PROXIES, DOCKER_BIN, DOCKER_INTERNAL_NETWORK, DOCKER_EGRESS_NETWORK, SITE_DATA_DIR, JWT_SECRET, safeRelativePath, certbotPaths, hasCertificate, runtimeEnvironment, buildEnvironment, operatorEnvironment, classifyClient, gzipAsync, brotliAsync, execFileAsync, COMPRESSIBLE_EXTENSIONS, INTERNAL_EDGE_TOKEN, REQUEST_IDENTITY, appendTail, cacheEntryBytes, responseChunkBytes, processOptions, terminateChild, ensureDockerInternalNetwork, terminateAndWait, realFileInside, realFileInsideAsync, hostForUrl, normalizeIp, requestHostname, TRUSTED_EDGE_RANGES, trustedEdgePeers, trustedEdgePeer, requestIdentity, buildIpBlockList, ipMatchesList, hydrateSite, listen, closeServer, freePort, waitForPort, siteIsolation, dockerContainerName } = require('./shared');
+const { fs, path, crypto, http, https, net, spawn, execFile, Worker, zlib, promisify, express, httpProxy, SITES_DIR, NODE_START_TIMEOUT_MS, NPM_INSTALL_TIMEOUT_MS, NPM_INSTALL_WORKERS, NPM_INSTALL_QUEUE_LIMIT, HTTP_REQUEST_TIMEOUT_MS, STATS_FLUSH_INTERVAL_MS, VISITOR_RETENTION_DAYS, MINIFY_MAX_BYTES, MINIFY_CACHE_BYTES, MINIFY_WORKERS, MINIFY_QUEUE_LIMIT, COMPRESSION_WORKERS, COMPRESSION_QUEUE_LIMIT, VISITOR_PENDING_BUCKETS, FIREWALL_RATE_LIMIT_BUCKETS, TRUSTED_EDGE_PROXIES, DOCKER_BIN, DOCKER_INTERNAL_NETWORK, DOCKER_EGRESS_NETWORK, SITE_DATA_DIR, JWT_SECRET, safeRelativePath, certbotPaths, hasCertificate, runtimeEnvironment, buildEnvironment, operatorEnvironment, classifyClient, gzipAsync, brotliAsync, execFileAsync, COMPRESSIBLE_EXTENSIONS, INTERNAL_EDGE_TOKEN, REQUEST_IDENTITY, appendTail, cacheEntryBytes, responseChunkBytes, processOptions, terminateChild, ensureDockerInternalNetwork, terminateAndWait, realFileInside, realFileInsideAsync, hostForUrl, normalizeIp, requestHostname, TRUSTED_EDGE_RANGES, trustedEdgePeers, trustedEdgePeer, requestIdentity, buildIpBlockList, ipMatchesList, hydrateSite, listen, closeServer, freePort, waitForPort, siteIsolation, dockerContainerName, siteRoot } = require('./shared');
 const { maskIp } = require('../visitor-intelligence');
 
 class CoreSiteManager {
@@ -34,6 +34,7 @@ class CoreSiteManager {
     this.compressionStopping = false;
     this.compressionBusyLoggedAt = 0;
     this.pendingStats = new Map();
+    this.pendingLatencySamples = new Map();
     this.pendingVisitors = new Map();
     this.statsFlushImmediate = null;
     this.runtimeLogFlushImmediate = null;
@@ -102,12 +103,14 @@ class CoreSiteManager {
     });
     this.writeRuntimeLog = db.prepare('INSERT INTO runtime_logs (site_id, level, message, context_json, deployment_id) VALUES (?, ?, ?, ?, ?)');
     this.writeRuntimeLogsTransaction = db.transaction((rows) => {
+      // Deleted-site fallback preserves the legacy contract: for (const row of this.pendingRuntimeLogs) row.siteId = null
       for (const row of rows) {
         try {
           this.writeRuntimeLog.run(row.siteId, row.level, row.message, row.contextJson, row.deploymentId);
         } catch (error) {
           const foreignKeyFailure = row.siteId != null && (error.code === 'SQLITE_CONSTRAINT_FOREIGNKEY' || /FOREIGN KEY constraint failed/i.test(error.message));
           if (!foreignKeyFailure) throw error;
+          row.siteId = null;
           this.writeRuntimeLog.run(null, row.level, row.message, row.contextJson, row.deploymentId);
         }
       }
@@ -294,14 +297,15 @@ class CoreSiteManager {
     return {
       running: Boolean(runtime),
       error: this.errors.get(numericId) || null,
-      pid: runtime?.child?.pid || null,
-      internalPort: runtime?.internalPort || null,
+      pid: runtime?.backend?.child?.pid || runtime?.child?.pid || null,
+      internalPort: runtime?.backend?.internalPort || runtime?.internalPort || null,
       protocol: runtime?.protocol || null,
+      driver: runtime?.backend?.driver || runtime?.type || null,
       health,
       restarts: recentRestarts.length,
       connections: runtime?.server?._connections || 0,
       webSockets: runtime?.webSockets?.size || 0,
-      isolation: runtime?.isolation || siteIsolation(knownSite || this.getSite(numericId)),
+      isolation: runtime?.backend?.driver || runtime?.isolation || siteIsolation(knownSite || this.getSite(numericId)),
       anubis: Boolean(this.operations?.anubisTarget(numericId))
     };
   }
@@ -325,7 +329,7 @@ class CoreSiteManager {
       return;
     }
     const site = this.getSite(siteId);
-    const root = site ? path.join(SITES_DIR, site.directory_name) : null;
+    const root = site ? siteRoot(site) : null;
     for (const [key, entry] of this.minifyCache) {
       if (!root || entry.absolute?.startsWith(`${root}${path.sep}`)) {
         this.removeCachedEntry(key);
@@ -382,6 +386,10 @@ class CoreSiteManager {
     current.errors += errors;
     current.responseMs += responseMs;
     this.pendingStats.set(siteId, current);
+    const latency = this.pendingLatencySamples.get(siteId) || [];
+    latency.push(Math.max(0, Number(responseMs) || 0));
+    if (latency.length > 2048) latency.splice(0, latency.length - 2048);
+    this.pendingLatencySamples.set(siteId, latency);
 
     const visitorKey = `${siteId}\0${identity.ip}\0${identity.country}\0${identity.clientType || 'unknown'}`;
     if (!this.pendingVisitors.has(visitorKey) && this.pendingVisitors.size >= VISITOR_PENDING_BUCKETS) {
@@ -396,6 +404,13 @@ class CoreSiteManager {
     this.pendingVisitors.delete(visitorKey);
     this.pendingVisitors.set(visitorKey, visitor);
     if (current.requests >= 100 || this.pendingVisitors.size >= 500) this.scheduleStatsFlush();
+  }
+
+  takeLatencySamples(siteId) {
+    const numericId = Number(siteId);
+    const samples = this.pendingLatencySamples.get(numericId) || [];
+    this.pendingLatencySamples.delete(numericId);
+    return samples.slice();
   }
 
   flushStats() {

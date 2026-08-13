@@ -139,6 +139,7 @@ ensureColumn('sites', 'redirects_json', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('sites', 'error_pages_json', "TEXT NOT NULL DEFAULT '{}'");
 ensureColumn('sites', 'cache_rules_json', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('sites', 'release_mode', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('sites', 'active_release_directory', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('sites', 'git_url', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('sites', 'git_branch', "TEXT NOT NULL DEFAULT 'main'");
 ensureColumn('sites', 'preview_domain', "TEXT NOT NULL DEFAULT ''");
@@ -149,6 +150,34 @@ ensureColumn('sites', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('sites', 'install_command', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('sites', 'build_command', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('sites', 'build_output_dir', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'runtime_preset', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'start_command', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'runtime_port_env', "TEXT NOT NULL DEFAULT 'PORT'");
+ensureColumn('sites', 'working_directory', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'readiness_type', "TEXT NOT NULL DEFAULT 'tcp'");
+ensureColumn('sites', 'readiness_path', "TEXT NOT NULL DEFAULT '/'");
+ensureColumn('sites', 'readiness_command', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'readiness_status_min', 'INTEGER NOT NULL DEFAULT 200');
+ensureColumn('sites', 'readiness_status_max', 'INTEGER NOT NULL DEFAULT 399');
+ensureColumn('sites', 'startup_timeout_seconds', 'INTEGER NOT NULL DEFAULT 30');
+ensureColumn('sites', 'shutdown_grace_seconds', 'INTEGER NOT NULL DEFAULT 10');
+ensureColumn('sites', 'container_mode', "TEXT NOT NULL DEFAULT 'image'");
+ensureColumn('sites', 'container_port', 'INTEGER NOT NULL DEFAULT 3000');
+ensureColumn('sites', 'dockerfile_path', "TEXT NOT NULL DEFAULT 'Dockerfile'");
+ensureColumn('sites', 'compose_file', "TEXT NOT NULL DEFAULT 'compose.yaml'");
+ensureColumn('sites', 'compose_service', "TEXT NOT NULL DEFAULT 'app'");
+ensureColumn('sites', 'buildpack_builder', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'runtime_manifest_hash', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'runtime_manifest_approved_hash', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'health_check_type', "TEXT NOT NULL DEFAULT 'http'");
+ensureColumn('sites', 'health_check_command', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'health_check_status_min', 'INTEGER NOT NULL DEFAULT 200');
+ensureColumn('sites', 'health_check_status_max', 'INTEGER NOT NULL DEFAULT 499');
+
+ensureColumn('sites', 'blue_green_drain_seconds', 'INTEGER NOT NULL DEFAULT 5');
+ensureColumn('sites', 'manifest_enabled', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('sites', 'cloudflare_auto_sync', 'INTEGER NOT NULL DEFAULT 0');
+
 
 ensureColumn('users', 'totp_secret', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0');
@@ -157,6 +186,81 @@ ensureColumn('plugins', 'permissions_json', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('plugins', 'signature_status', "TEXT NOT NULL DEFAULT 'unsigned'");
 ensureColumn('plugins', 'isolation', "TEXT NOT NULL DEFAULT 'in-process'");
 db.exec(`
+  CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    scopes_json TEXT NOT NULL DEFAULT '[]',
+    expires_at TEXT,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS oidc_identities (
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    email TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login_at TEXT,
+    PRIMARY KEY (issuer, subject),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS oidc_states (
+    state_hash TEXT PRIMARY KEY,
+    nonce TEXT NOT NULL,
+    verifier TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS runtime_instances (
+    site_id INTEGER PRIMARY KEY,
+    driver TEXT NOT NULL,
+    external_id TEXT NOT NULL DEFAULT '',
+    internal_host TEXT NOT NULL DEFAULT '',
+    internal_port INTEGER NOT NULL DEFAULT 0,
+    root_path TEXT NOT NULL DEFAULT '',
+    observed_state TEXT NOT NULL DEFAULT 'stopped',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS site_performance_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id INTEGER NOT NULL,
+    sampled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    cpu_percent REAL NOT NULL DEFAULT 0,
+    rss_bytes INTEGER NOT NULL DEFAULT 0,
+    request_rate REAL NOT NULL DEFAULT 0,
+    error_rate REAL NOT NULL DEFAULT 0,
+    avg_response_ms REAL NOT NULL DEFAULT 0,
+    p95_response_ms REAL NOT NULL DEFAULT 0,
+    connections INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_site_performance_samples_time ON site_performance_samples(site_id, sampled_at DESC);
+
+  CREATE TABLE IF NOT EXISTS alert_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id INTEGER,
+    kind TEXT NOT NULL,
+    threshold REAL NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'warning',
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_alert_rules_site ON alert_rules(site_id, enabled);
+
   CREATE TABLE IF NOT EXISTS site_visitor_stats (
     site_id INTEGER NOT NULL,
     ip TEXT NOT NULL,
@@ -473,8 +577,19 @@ db.exec(`
   INSERT OR IGNORE INTO settings (key, value) VALUES ('instance_locale', 'en');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('setup_completed', '0');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('update_channel', 'stable');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('oidc_enabled', '0');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('oidc_issuer', '');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('oidc_client_id', '');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('oidc_client_secret', '');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('oidc_auto_provision', '0');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('oidc_default_role', 'user');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('cloudflare_reconcile_enabled', '0');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('cloudflare_reconcile_minutes', '15');
 
 `);
+
+ensureColumn('site_performance_samples', 'p50_response_ms', 'REAL NOT NULL DEFAULT 0');
+ensureColumn('site_performance_samples', 'restarts', 'INTEGER NOT NULL DEFAULT 0');
 
 ensureColumn('site_visitor_stats', 'client_type', "TEXT NOT NULL DEFAULT 'unknown'");
 ensureColumn('site_visitor_stats', 'user_agent', "TEXT NOT NULL DEFAULT ''");
@@ -522,6 +637,8 @@ if (visitorStatsPrimaryKey().join(',') !== 'site_id,ip,country,client_type') {
 
 ensureColumn('runtime_logs', 'deployment_id', 'INTEGER');
 ensureColumn('site_releases', 'deployment_id', 'INTEGER');
+ensureColumn('site_releases', 'manifest_hash', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('site_releases', 'runtime_config_json', "TEXT NOT NULL DEFAULT '{}'");
 db.exec('CREATE INDEX IF NOT EXISTS idx_runtime_logs_deployment ON runtime_logs(deployment_id, created_at ASC)');
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_site_visitor_stats_recent ON site_visitor_stats(site_id, last_request_at DESC);

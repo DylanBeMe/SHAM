@@ -240,7 +240,7 @@ function renderOperationsInstance(payload) {
   $('#backup-clear-secrets').checked = false;
   updateBackupProviderFields();
   $('#backup-secret-status').textContent = (backup.secretFields || []).length ? `Stored encrypted credentials: ${(backup.secretFields || []).join(', ')}. Blank secret fields preserve the saved value.` : 'Credentials entered here are encrypted and are never returned by the API.';
-  $('#backup-list').innerHTML = (payload.backups || []).length ? payload.backups.slice(0, 12).map((backupRun) => `<div class="event-item"><div><strong>${escapeHtml(backupRun.filename || 'Backup')}</strong><span>${escapeHtml(backupRun.destination)} · ${formatBytes(backupRun.bytes)} · ${escapeHtml(formatDate(backupRun.finishedAt || backupRun.startedAt))}</span>${backupRun.detail ? `<small>${escapeHtml(backupRun.detail)}</small>` : ''}</div><span class="badge ${backupRun.status === 'success' ? 'success' : backupRun.status === 'failed' ? 'error' : 'warning'}">${escapeHtml(backupRun.status)}</span></div>`).join('') : '<p class="muted">No backup runs recorded.</p>';
+  $('#backup-list').innerHTML = (payload.backups || []).length ? payload.backups.slice(0, 12).map((backupRun) => `<div class="event-item actionable" data-backup-id="${backupRun.id}"><div><strong>${escapeHtml(backupRun.filename || 'Backup')}</strong><span>${escapeHtml(backupRun.destination)} · ${formatBytes(backupRun.bytes)} · ${escapeHtml(formatDate(backupRun.finishedAt || backupRun.startedAt))}</span>${backupRun.detail ? `<small>${escapeHtml(backupRun.detail)}</small>` : ''}</div><div class="inline-actions"><span class="badge ${backupRun.status === 'success' ? 'success' : backupRun.status === 'failed' ? 'error' : 'warning'}">${escapeHtml(backupRun.status)}</span>${backupRun.status === 'success' ? '<button class="button secondary" data-restore-backup type="button">Restore</button>' : ''}</div></div>`).join('') : '<p class="muted">No backup runs recorded.</p>';
 
   $('#prometheus-enabled').checked = Boolean(settings.prometheusEnabled);
   $('#prometheus-token').value = '';
@@ -273,6 +273,8 @@ function renderOperationsInstance(payload) {
   const items = [
     ['Docker isolation', capabilities.docker, capabilities.dockerReason],
     ['Git releases', capabilities.git, capabilities.git ? '' : 'Git executable was not found.'],
+    ['Buildpacks', capabilities.buildpacks, capabilities.buildpacks ? '' : 'The pack executable was not found; Dockerfile/image runtimes still work.'],
+    ['Nixpacks', capabilities.nixpacks, capabilities.nixpacks ? '' : 'The nixpacks executable was not found; Dockerfile/image runtimes still work.'],
     ['Cloudflare Tunnel', capabilities.cloudflared, capabilities.cloudflared ? '' : 'The cloudflared executable was not found.'],
     ['Anubis', capabilities.anubis, capabilities.anubis ? '' : (capabilities.dockerReason || 'Anubis requires Docker isolation support.')],
     ['External backup', backup.configured, backup.configured ? '' : 'Configure and test an external backup destination.'],
@@ -287,7 +289,7 @@ function renderOperationsInstance(payload) {
     ['Enable multi-factor authentication', Boolean(state.security?.user?.totpEnabled || (state.security?.passkeys || []).length)],
     ['Configure external backups', Boolean(backup.configured)],
     ['Configure an alert destination', Boolean((payload.alertDestinations || []).length)],
-    ['Enable isolated runtime for untrusted Node code', site?.runtime_type !== 'node' || site?.runtime_isolation === 'docker']
+    ['Review isolation for server-side runtimes', !site || ['static', 'proxy'].includes(site.runtime_type) || site.runtime_type === 'container' || site.runtime_type === 'compose' || site.runtime_isolation === 'docker']
   ];
   $('#setup-checklist').innerHTML = `<div class="panel-heading"><div><h2>Readiness checklist</h2><p class="muted">Recommended safeguards before exposing production sites.</p></div><span class="badge">${checklist.filter(([, ready]) => ready).length}/${checklist.length}</span></div><div class="checklist-grid">${checklist.map(([label, ready]) => `<div class="checklist-item ${ready ? 'complete' : ''}"><span>${ready ? '✓' : '○'}</span><strong>${escapeHtml(label)}</strong></div>`).join('')}</div>`;
 }
@@ -430,9 +432,23 @@ $('#git-deploy-form').addEventListener('submit', async (event) => {
   const site = operationsSite();
   if (!site) return;
   const button = $('#git-deploy');
+  const body = { url: $('#git-url').value, branch: $('#git-branch').value, deployKey: $('#git-deploy-key').value, installDependencies: $('#git-install-dependencies').checked, installCommand: $('#git-install-command').value, buildCommand: $('#git-build-command').value, buildOutputDir: $('#git-build-output').value };
   setBusy(button, true, 'Deploying…');
   try {
-    const result = await api(`/api/sites/${site.id}/deploy/git`, { method: 'POST', body: { url: $('#git-url').value, branch: $('#git-branch').value, deployKey: $('#git-deploy-key').value, installDependencies: $('#git-install-dependencies').checked, installCommand: $('#git-install-command').value, buildCommand: $('#git-build-command').value, buildOutputDir: $('#git-build-output').value } });
+    let result;
+    try { result = await api(`/api/sites/${site.id}/deploy/git`, { method: 'POST', body }); }
+    catch (error) {
+      if (error.code !== 'SHAM_MANIFEST_APPROVAL_REQUIRED') throw error;
+      const config = error.payload?.manifest?.config || {};
+      const runtime = config.runtime || {};
+      const build = config.build || {};
+      const summary = error.payload?.manifest?.removed
+        ? 'This commit removes the repository runtime manifest.'
+        : `This commit changes repository-controlled execution policy.${runtime.driver ? ` Runtime: ${runtime.driver}.` : ''}${runtime.command ? ` Start: ${String(runtime.command).slice(0, 180)}.` : ''}${build.install ? ` Install: ${String(build.install).slice(0, 180)}.` : ''}${build.command ? ` Build: ${String(build.command).slice(0, 180)}.` : ''}`;
+      const approved = await requestAction({ title: 'Approve repository execution policy?', message: `${summary} Only approve after reviewing the changed sham.yaml/sham.yml/sham.json in the repository.`, confirmLabel: 'Approve and deploy', danger: true });
+      if (!approved) return;
+      result = await api(`/api/sites/${site.id}/deploy/git`, { method: 'POST', body: { ...body, approveManifestChanges: true } });
+    }
     $('#git-deploy-key').value = '';
     toast(result.warning || (result.webhook ? `Git release activated; ${result.webhook.provider} push webhook ${result.webhook.action}.` : 'Git release validated and activated.'), result.warning ? 'warning' : 'success');
     await Promise.all([loadSites(), loadOperations()]);
@@ -617,6 +633,21 @@ $('#run-backup').addEventListener('click', async (event) => {
   try { await api('/api/admin/backups/run', { method: 'POST', body: { provider: $('#backup-provider').value } }); toast('Backup completed.'); await loadOperations(); }
   catch (error) { toast(error.message, 'error'); }
   finally { setBusy(event.currentTarget, false); }
+});
+
+$('#backup-list').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-restore-backup]');
+  if (!button) return;
+  const item = button.closest('[data-backup-id]');
+  const password = await requestAction({ title: 'Stage full SHAM restore?', message: 'This restores the entire SHAM data snapshot on the next process restart. SHAM creates a fresh safety backup before staging the restore. Confirm your password to continue.', confirmLabel: 'Stage restore', danger: true, inputLabel: 'Password', inputType: 'password', autocomplete: 'current-password' });
+  if (!password) return;
+  setBusy(button, true, 'Staging…');
+  try {
+    const result = await api(`/api/admin/backups/${item.dataset.backupId}/restore`, { method: 'POST', body: { password } });
+    toast(`${result.message} Safety backup: ${result.safetyBackup?.filename || 'created'}.`, 'warning');
+    await loadOperations();
+  } catch (error) { toast(error.message, 'error'); }
+  finally { setBusy(button, false); }
 });
 
 $('#clear-prometheus-token').addEventListener('change', (event) => {

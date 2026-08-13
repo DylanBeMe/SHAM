@@ -2,9 +2,57 @@
 
 const { ConfigurationOperations } = require('./configuration');
 const { applyGitProviderCredentials, providerForRepositoryUrl, providerCommitUrl, normalizeWebhookBaseUrl, ensureProviderWebhook } = require('../git-providers');
+const { readManifest, resolveRuntimeSpec, executionPolicyHash } = require('../runtime-spec');
+const { createEnvFile } = require('../runtime-engine');
 const { fs, path, os, http, net, crypto, spawn, express, httpProxy, DATA_DIR, SITES_DIR, RELEASES_DIR, PREVIEWS_DIR, BACKUPS_DIR, SITE_DATA_DIR, DOCKER_BIN, GIT_BIN, TAR_BIN, RESTIC_BIN, AWS_BIN, SFTP_BIN, ANUBIS_IMAGE, JOB_POLL_INTERVAL_MS, JOB_TIMEOUT_MS, BACKUP_TIMEOUT_MS, GIT_TIMEOUT_MS, PREVIEW_TTL_HOURS, HTTP_REQUEST_TIMEOUT_MS, encrypt, decrypt, getSecretSetting, setSecretSetting, safeRelativePath, runtimeEnvironment, buildEnvironment, operatorEnvironment, appendTail, commandAvailable, processOptions, terminate, terminateAndWait, runProcess, runConfiguredCommand, parseField, parseCron, cronMatches, nextCronDate, safeName, pathInside, sftpQuote, freePort, closeServer, siteRoot, requiredFile, ensureRequiredFile, validateGitUrl, validateBranch } = require('./shared');
 
 class DeploymentOperations extends ConfigurationOperations {
+  hostMountPathForStage(stage) {
+    if (!fs.existsSync('/.dockerenv')) return stage;
+    const hostData = String(process.env.SHAM_DOCKER_HOST_DATA_PATH || '').trim();
+    if (!hostData) throw new Error('Containerized builds require SHAM_DOCKER_HOST_DATA_PATH so Docker can mount the staged source directory.');
+    const relative = path.relative(DATA_DIR, stage);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Staged build path is outside SHAM data storage.');
+    return path.join(path.resolve(hostData), relative);
+  }
+
+  async runContainerBuildCommand(site, stage, command, environment, label, deploymentId) {
+    const image = String(site.container_image || 'node:22-alpine').trim();
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,255}$/.test(image)) throw new Error('Container image is invalid.');
+    const envFile = await createEnvFile(site.id, environment);
+    try {
+      await runProcess(DOCKER_BIN, ['run', '--rm', '--init', '--env-file', envFile, '-v', `${this.hostMountPathForStage(stage)}:/workspace:rw`, '-w', '/workspace', image, '/bin/sh', '-lc', command], this.trackedProcessOptions({
+        timeoutMs: GIT_TIMEOUT_MS,
+        env: operatorEnvironment(),
+        onLine: (level, line) => this.manager.log(site.id, level, `${label}: ${line}`, { deploymentId })
+      }));
+    } finally { await fs.promises.rm(envFile, { force: true }).catch(() => {}); }
+  }
+
+  runtimeManifestForStage(site, stage, approveManifestChanges = false) {
+    const manifestRecord = site.manifest_enabled === false ? null : readManifest(stage);
+    const manifestHash = manifestRecord ? crypto.createHash('sha256').update(manifestRecord.raw).digest('hex') : '';
+    const spec = resolveRuntimeSpec(site, stage, { manifestRecord });
+    const policyHash = executionPolicyHash(spec);
+    const previousManifestHash = String(site.runtime_manifest_hash || '');
+    const previousApprovedPolicy = String(site.runtime_manifest_approved_hash || '');
+    const manifestChanged = manifestHash !== previousManifestHash;
+    const executionChanged = manifestRecord
+      ? (previousApprovedPolicy ? policyHash !== previousApprovedPolicy : manifestChanged)
+      : Boolean(previousManifestHash);
+    if (manifestChanged && executionChanged && !approveManifestChanges) {
+      const error = new Error(manifestRecord
+        ? 'This commit changes sham.yaml runtime/build execution policy. Review and explicitly approve the manifest before deploying.'
+        : 'This commit removes the active sham.yaml execution policy. Review and explicitly approve the removal before deploying.');
+      error.code = 'SHAM_MANIFEST_APPROVAL_REQUIRED';
+      error.manifest = manifestRecord
+        ? { filename: manifestRecord.filename, hash: manifestHash, policyHash, config: manifestRecord.manifest }
+        : { removed: true, previousHash: previousManifestHash };
+      throw error;
+    }
+    return { manifestRecord, manifestHash, policyHash: manifestRecord ? policyHash : '', spec };
+  }
+
   async configureProviderWebhook(site, baseUrl) {
     if (!site?.git_url) return null;
     const provider = providerForRepositoryUrl(site.git_url);
@@ -15,7 +63,7 @@ class DeploymentOperations extends ConfigurationOperations {
     return ensureProviderWebhook(this.db, site.git_url, callbackUrl, secret);
   }
 
-  async cloneRepository(site, { url, branch, deployKey = '', installDependencies = false, installCommand = '', buildCommand = '', buildOutputDir = '', deploymentId = null }) {
+  async cloneRepository(site, { url, branch, deployKey = '', installDependencies = false, installCommand = '', buildCommand = '', buildOutputDir = '', deploymentId = null, approveManifestChanges = false }) {
     const repository = validateGitUrl(url);
     const ref = validateBranch(branch);
     const privateKey = String(deployKey || '');
@@ -37,19 +85,24 @@ class DeploymentOperations extends ConfigurationOperations {
       const commitMessage = String(metadata.slice(1).join(' ').trim() || '').slice(0, 500);
       await fs.promises.rm(path.join(stage, '.git'), { recursive: true, force: true });
 
-      const configuredInstall = String(installCommand || site.install_command || '').trim();
-      const configuredBuild = String(buildCommand || site.build_command || '').trim();
-      const outputDirectory = String(buildOutputDir || site.build_output_dir || '').trim();
+      const manifest = this.runtimeManifestForStage(site, stage, Boolean(approveManifestChanges));
+      const spec = manifest.spec;
+      const configuredInstall = String(installCommand || spec.installCommand || '').trim();
+      const configuredBuild = String(buildCommand || spec.buildCommand || '').trim();
+      const outputDirectory = String(buildOutputDir || spec.buildOutputDir || '').trim();
+      const isolatedBuild = ['container', 'compose'].includes(spec.driver);
       if (configuredInstall) {
-        await runConfiguredCommand(configuredInstall, this.trackedProcessOptions({ cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `install: ${line}`, { deploymentId }) }));
-      } else if (installDependencies && site.runtime_type === 'node') {
+        if (isolatedBuild) await this.runContainerBuildCommand(site, stage, configuredInstall, environment, 'install', deploymentId);
+        else await runConfiguredCommand(configuredInstall, this.trackedProcessOptions({ cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `install: ${line}`, { deploymentId }) }));
+      } else if (installDependencies && site.runtime_type === 'node' && !(site.runtime_isolation === 'docker')) {
         const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
         await runProcess(npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], this.trackedProcessOptions({ cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `npm: ${line}`, { deploymentId }) }));
       }
       if (configuredBuild) {
-        await runConfiguredCommand(configuredBuild, this.trackedProcessOptions({ cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `build: ${line}`, { deploymentId }) }));
+        if (isolatedBuild) await this.runContainerBuildCommand(site, stage, configuredBuild, environment, 'build', deploymentId);
+        else await runConfiguredCommand(configuredBuild, this.trackedProcessOptions({ cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `build: ${line}`, { deploymentId }) }));
       }
-      if (outputDirectory) {
+      if (outputDirectory && spec.driver === 'static') {
         const output = path.join(stage, ...safeRelativePath(outputDirectory, 'Build output directory').split('/'));
         const stageReal = await fs.promises.realpath(stage);
         const outputReal = await fs.promises.realpath(output).catch(() => '');
@@ -60,7 +113,7 @@ class DeploymentOperations extends ConfigurationOperations {
         stage = deployStage;
       }
       await ensureRequiredFile(site, stage);
-      return { stage, repository, ref, commitSha, commitAuthor, commitMessage };
+      return { stage, repository, ref, commitSha, commitAuthor, commitMessage, manifestHash: manifest.manifestHash, policyHash: manifest.policyHash, runtimeSpec: spec };
     } catch (error) {
       await fs.promises.rm(stage, { recursive: true, force: true }).catch(() => {});
       throw error;
@@ -69,38 +122,70 @@ class DeploymentOperations extends ConfigurationOperations {
     }
   }
 
-  async activateRelease(site, stage, { source, version, commitSha = null, deploymentId = null }) {
-    const root = siteRoot(site);
+  async activateRelease(site, stage, { source, version, commitSha = null, deploymentId = null, manifestHash = '', policyHash = '', runtimeSpec = null }) {
     await ensureRequiredFile(site, stage);
     const releaseBase = path.join(RELEASES_DIR, String(site.id));
     await fs.promises.mkdir(releaseBase, { recursive: true });
-    const previousArchive = path.join(releaseBase, `release-${Date.now()}-${crypto.randomUUID()}`);
+    const releaseDirectory = `release-${Date.now()}-${crypto.randomUUID()}`;
+    const releaseRoot = path.join(releaseBase, releaseDirectory);
+    const legacyRoot = path.join(SITES_DIR, site.directory_name);
     const wasRunning = this.manager.statusFor(site.id).running;
-    await this.manager.stop(site.id);
-    let previousMoved = false;
-    let metadataCommitted = false;
+    const shouldRun = wasRunning || site.enabled;
+    let candidate = null;
+    let promoted = false;
+    let releasePlaced = false;
+    let legacyArchiveDirectory = '';
+    let legacyArchiveRoot = '';
+    let databaseActivated = false;
     try {
-      await fs.promises.rename(root, previousArchive);
-      previousMoved = true;
-      await fs.promises.rename(stage, root);
-      if (wasRunning || site.enabled) await this.manager.start(site.id);
+      // Releases must run from a pathname that never changes while the process/container is alive.
+      // Moving an already-started cwd can break lazy module/config loading in Node, Python and other runtimes.
+      await fs.promises.rename(stage, releaseRoot);
+      releasePlaced = true;
+
+      const current = this.db.prepare('SELECT id, directory_name FROM site_releases WHERE site_id = ? AND active = 1').get(site.id);
+      const knownCurrentDirectory = String(current?.directory_name || site.active_release_directory || '').trim();
+      if (!knownCurrentDirectory) {
+        const legacyStat = await fs.promises.stat(legacyRoot).catch(() => null);
+        if (legacyStat?.isDirectory()) {
+          legacyArchiveDirectory = `release-${Date.now()}-${crypto.randomUUID()}`;
+          legacyArchiveRoot = path.join(releaseBase, legacyArchiveDirectory);
+          await fs.promises.cp(legacyRoot, legacyArchiveRoot, { recursive: true, force: false, errorOnExist: true });
+        }
+      }
+
+      if (shouldRun) {
+        this.manager.log(site.id, 'info', 'Starting release candidate from its stable release path and waiting for readiness before traffic switch.', { deploymentId });
+        candidate = await this.manager.prepareCandidate(site, releaseRoot, runtimeSpec ? { spec: runtimeSpec } : {});
+        await this.manager.promoteCandidate(site, candidate, { root: releaseRoot, deferCleanup: true });
+        promoted = true;
+      }
+
       const transaction = this.db.transaction(() => {
-        const current = this.db.prepare('SELECT id FROM site_releases WHERE site_id = ? AND active = 1').get(site.id);
-        if (current) this.db.prepare("UPDATE site_releases SET active = 0, status = 'ready', directory_name = ? WHERE id = ?").run(path.basename(previousArchive), current.id);
-        else this.db.prepare("INSERT INTO site_releases (site_id, version, source, directory_name, status, active) VALUES (?, ?, 'existing', ?, 'ready', 0)").run(site.id, `pre-${Date.now()}`, path.basename(previousArchive));
+        const active = this.db.prepare('SELECT id, directory_name FROM site_releases WHERE site_id = ? AND active = 1').get(site.id);
+        const previousDirectory = String(active?.directory_name || site.active_release_directory || legacyArchiveDirectory || '').trim();
+        if (active) {
+          if (previousDirectory) this.db.prepare("UPDATE site_releases SET active = 0, status = 'ready', directory_name = ? WHERE id = ?").run(previousDirectory, active.id);
+          else this.db.prepare("UPDATE site_releases SET active = 0, status = 'ready' WHERE id = ?").run(active.id);
+        } else if (previousDirectory) {
+          this.db.prepare("INSERT INTO site_releases (site_id, version, source, directory_name, status, active) VALUES (?, ?, 'existing', ?, 'ready', 0)").run(site.id, `pre-${Date.now()}`, previousDirectory);
+        }
         this.db.prepare('UPDATE site_releases SET active = 0 WHERE site_id = ?').run(site.id);
-        this.db.prepare("INSERT INTO site_releases (site_id, version, source, directory_name, commit_sha, deployment_id, status, active) VALUES (?, ?, ?, '', ?, ?, 'active', 1)").run(site.id, version, source, commitSha, deploymentId ? Number(deploymentId) : null);
-        this.db.prepare('UPDATE sites SET release_mode = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(site.id);
+        this.db.prepare("INSERT INTO site_releases (site_id, version, source, directory_name, commit_sha, deployment_id, status, active) VALUES (?, ?, ?, ?, ?, ?, 'active', 1)").run(site.id, version, source, releaseDirectory, commitSha, deploymentId ? Number(deploymentId) : null);
+        this.db.prepare('UPDATE sites SET release_mode = 1, active_release_directory = ?, runtime_manifest_hash = ?, runtime_manifest_approved_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(releaseDirectory, String(manifestHash || ''), String(policyHash || ''), site.id);
       });
       transaction();
-      metadataCommitted = true;
+      databaseActivated = true;
+      if (candidate) await this.manager.finalizePromotion(candidate);
+
+      // Once the old backend has drained, the legacy mutable site directory is no longer authoritative.
+      // Its rollback copy (when present) lives under releases/ and all future file operations resolve the active release path.
+      if (legacyArchiveDirectory) await fs.promises.rm(legacyRoot, { recursive: true, force: true }).catch((error) => this.manager.log(site.id, 'error', `Could not remove migrated legacy release directory: ${error.message}`));
     } catch (error) {
-      if (!metadataCommitted) {
-        await this.manager.stop(site.id).catch(() => {});
-        await fs.promises.rm(root, { recursive: true, force: true }).catch(() => {});
-        if (previousMoved) await fs.promises.rename(previousArchive, root).catch(() => {});
-        if (wasRunning || site.enabled) await this.manager.start(site.id).catch((restartError) => this.manager.log(site.id, 'error', `Release rollback runtime recovery failed: ${restartError.message}`));
-      }
+      if (promoted && candidate && !databaseActivated) await this.manager.rollbackPromotion(site, candidate).catch(() => {});
+      else if (candidate && !databaseActivated) await this.manager.discardCandidate(candidate).catch(() => {});
+      if (!databaseActivated && releasePlaced) await fs.promises.rm(releaseRoot, { recursive: true, force: true }).catch(() => {});
+      if (!databaseActivated && legacyArchiveRoot) await fs.promises.rm(legacyArchiveRoot, { recursive: true, force: true }).catch(() => {});
       throw error;
     } finally {
       await fs.promises.rm(stage, { recursive: true, force: true }).catch(() => {});
@@ -182,7 +267,7 @@ class DeploymentOperations extends ConfigurationOperations {
       // Runtime stop/start output during activation belongs to the deployment being activated,
       // not the previously-active release.
       this.manager.activeDeploymentIds?.set(Number(site.id), deploymentId);
-      const release = await this.activateRelease(site, cloned.stage, { source: 'git', version, commitSha: cloned.commitSha, deploymentId });
+      const release = await this.activateRelease(site, cloned.stage, { source: 'git', version, commitSha: cloned.commitSha, deploymentId, manifestHash: cloned.manifestHash, policyHash: cloned.policyHash, runtimeSpec: cloned.runtimeSpec });
       let warning = null;
       try {
         this.db.prepare('UPDATE sites SET git_url = ?, git_branch = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(cloned.repository, cloned.ref, site.id);
@@ -216,51 +301,46 @@ class DeploymentOperations extends ConfigurationOperations {
     if (!selected?.directory_name) throw new Error('Rollback release not found.');
     const selectedPath = path.join(RELEASES_DIR, String(site.id), selected.directory_name);
     await ensureRequiredFile(site, selectedPath);
-    const root = siteRoot(site);
-    const currentArchive = path.join(RELEASES_DIR, String(site.id), `release-${Date.now()}-${crypto.randomUUID()}`);
+    const rollbackManifest = this.runtimeManifestForStage(site, selectedPath, true);
     const wasRunning = this.manager.statusFor(site.id).running;
-    await this.manager.stop(site.id);
-    let currentMoved = false;
-    let metadataCommitted = false;
+    const shouldRun = wasRunning || site.enabled;
+    let candidate = null;
+    let promoted = false;
+    let databaseActivated = false;
     try {
-      await fs.promises.rename(root, currentArchive);
-      currentMoved = true;
-      await fs.promises.rename(selectedPath, root);
-      if (wasRunning || site.enabled) await this.manager.start(site.id);
+      // Retained releases are stable directories. Start the selected one in place, prove readiness,
+      // then switch traffic and metadata without renaming either the old or new runtime directory.
+      if (shouldRun) {
+        candidate = await this.manager.prepareCandidate(site, selectedPath, { spec: rollbackManifest.spec });
+        await this.manager.promoteCandidate(site, candidate, { root: selectedPath, deferCleanup: true });
+        promoted = true;
+      }
       const transaction = this.db.transaction(() => {
-        const current = this.db.prepare('SELECT id FROM site_releases WHERE site_id = ? AND active = 1').get(site.id);
-        if (current) this.db.prepare("UPDATE site_releases SET active = 0, status = 'ready', directory_name = ? WHERE id = ?").run(path.basename(currentArchive), current.id);
-        this.db.prepare("UPDATE site_releases SET active = 1, status = 'active', directory_name = '' WHERE id = ?").run(selected.id);
+        const current = this.db.prepare('SELECT id, directory_name FROM site_releases WHERE site_id = ? AND active = 1').get(site.id);
+        if (current) this.db.prepare("UPDATE site_releases SET active = 0, status = 'ready' WHERE id = ?").run(current.id);
+        this.db.prepare("UPDATE site_releases SET active = 1, status = 'active' WHERE id = ?").run(selected.id);
+        this.db.prepare('UPDATE sites SET active_release_directory = ?, runtime_manifest_hash = ?, runtime_manifest_approved_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(selected.directory_name, rollbackManifest.manifestHash, rollbackManifest.policyHash, site.id);
       });
       transaction();
-      metadataCommitted = true;
+      databaseActivated = true;
+      if (candidate) await this.manager.finalizePromotion(candidate);
       let historyWarning = null;
       try {
         const currentDeployment = this.db.prepare("SELECT id FROM site_deployments WHERE site_id = ? AND status IN ('running', 'deployed-with-warning') ORDER BY id DESC LIMIT 1").get(site.id);
-        let activatedDeployment = selected.deployment_id
-          ? this.db.prepare('SELECT id FROM site_deployments WHERE site_id = ? AND id = ?').get(site.id, selected.deployment_id)
-          : null;
+        let activatedDeployment = selected.deployment_id ? this.db.prepare('SELECT id FROM site_deployments WHERE site_id = ? AND id = ?').get(site.id, selected.deployment_id) : null;
         if (!activatedDeployment && selected.commit_sha) activatedDeployment = this.db.prepare('SELECT id FROM site_deployments WHERE site_id = ? AND commit_sha = ? AND id != COALESCE(?, 0) ORDER BY id DESC LIMIT 1').get(site.id, selected.commit_sha, currentDeployment?.id || 0);
         if (activatedDeployment) this.manager.activeDeploymentIds?.set(Number(site.id), Number(activatedDeployment.id));
         if (currentDeployment) this.db.prepare("UPDATE site_deployments SET status = 'rolled-back' WHERE id = ?").run(currentDeployment.id);
-        if (activatedDeployment) {
-          this.updateDeploymentStatus(activatedDeployment.id, 'running', 'This deployment was reactivated by rollback.');
-        } else {
-          const rollbackDeploymentId = this.recordDeployment(site.id, { source: 'rollback', status: 'running', ref: String(selected.id), detail: `Rollback activated release ${selected.version}.`, commitSha: selected.commit_sha || '' });
-          this.manager.activeDeploymentIds?.set(Number(site.id), rollbackDeploymentId);
-        }
+        if (activatedDeployment) this.updateDeploymentStatus(activatedDeployment.id, 'running', 'This deployment was reactivated by rollback.');
+        else this.manager.activeDeploymentIds?.set(Number(site.id), this.recordDeployment(site.id, { source: 'rollback', status: 'running', ref: String(selected.id), detail: `Rollback activated release ${selected.version}.`, commitSha: selected.commit_sha || '' }));
       } catch (historyError) {
         historyWarning = `Release rollback is active, but SHAM could not finalize deployment history: ${historyError.message}`;
         this.manager.log(site.id, 'error', historyWarning);
       }
       return { releases: this.listReleases(site.id), warning: historyWarning };
     } catch (error) {
-      if (!metadataCommitted) {
-        await this.manager.stop(site.id).catch(() => {});
-        await fs.promises.rm(root, { recursive: true, force: true }).catch(() => {});
-        if (currentMoved) await fs.promises.rename(currentArchive, root).catch(() => {});
-        if (wasRunning || site.enabled) await this.manager.start(site.id).catch((restartError) => this.manager.log(site.id, 'error', `Rollback recovery failed: ${restartError.message}`));
-      }
+      if (promoted && candidate && !databaseActivated) await this.manager.rollbackPromotion(site, candidate).catch(() => {});
+      else if (candidate && !databaseActivated) await this.manager.discardCandidate(candidate).catch(() => {});
       throw error;
     }
   }
@@ -279,7 +359,6 @@ class DeploymentOperations extends ConfigurationOperations {
     const directoryName = `preview-${idToken}`;
     const previewRoot = path.join(PREVIEWS_DIR, directoryName);
     await fs.promises.cp(root, previewRoot, { recursive: true, force: false, filter: (source) => { const relative = path.relative(root, source); return relative !== '.sham' && !relative.startsWith(`.sham${path.sep}`); } });
-    const port = await freePort();
     const previewHostname = String(hostname || `preview-${site.id}.${site.domain || 'local.invalid'}`).trim().toLowerCase();
     if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(previewHostname)) {
       await fs.promises.rm(previewRoot, { recursive: true, force: true });
@@ -287,45 +366,22 @@ class DeploymentOperations extends ConfigurationOperations {
     }
     const expires = new Date(Date.now() + Math.min(Math.max(Number(ttlHours) || PREVIEW_TTL_HOURS, 1), 720) * 3600_000).toISOString();
     let runtime;
-    let previewChild = null;
     try {
-      if (site.runtime_type === 'proxy') throw new Error('Preview copies are not available for reverse-proxy sites.');
-      if (site.runtime_type === 'static') {
-        const app = express();
-        app.use(express.static(previewRoot, { index: site.entry_file, fallthrough: true, maxAge: 0 }));
-        app.use((_req, res) => res.status(404).type('text/plain').send('Preview file not found.'));
-        const server = http.createServer(app);
-        server.requestTimeout = HTTP_REQUEST_TIMEOUT_MS;
-        await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
-        runtime = { server, target: `http://127.0.0.1:${port}`, root: previewRoot };
-      } else {
-        const entry = safeRelativePath(site.node_entry, 'Node entry file');
-        previewChild = spawn(process.execPath, [entry], processOptions({ cwd: previewRoot, env: runtimeEnvironment({ ...this.siteEnvironment(site.id), PORT: String(port), HOST: '127.0.0.1', NODE_ENV: 'production', SHAM_PREVIEW: '1' }), stdio: ['ignore', 'pipe', 'pipe'] }));
-        previewChild.stdout.on('data', (chunk) => this.manager.log(site.id, 'info', `preview: ${chunk.toString().trim().slice(0, 1000)}`));
-        previewChild.stderr.on('data', (chunk) => this.manager.log(site.id, 'error', `preview: ${chunk.toString().trim().slice(0, 1000)}`));
-        await new Promise((resolve, reject) => {
-          const started = Date.now();
-          const check = () => {
-            if (previewChild.exitCode !== null || previewChild.signalCode !== null) return reject(new Error('Preview process exited during startup.'));
-            const socket = net.connect({ host: '127.0.0.1', port });
-            socket.once('connect', () => { socket.destroy(); resolve(); });
-            socket.once('error', () => { socket.destroy(); if (Date.now() - started > 30_000) reject(new Error('Preview process did not begin listening.')); else setTimeout(check, 150); });
-          };
-          check();
-        });
-        runtime = { child: previewChild, target: `http://127.0.0.1:${port}`, root: previewRoot };
-      }
+      runtime = await this.manager.startPreviewRuntime(site, previewRoot);
+      const port = Number(runtime.internalPort || (() => { try { return new URL(runtime.target).port; } catch { return 0; } })());
       const result = this.db.prepare("INSERT INTO preview_deployments (site_id, hostname, port, directory_name, status, expires_at) VALUES (?, ?, ?, ?, 'running', ?)").run(site.id, previewHostname, port, directoryName, expires);
       const id = Number(result.lastInsertRowid);
       runtime.hostname = previewHostname;
       runtime.expiresAt = expires;
       this.previewRuntimes.set(id, runtime);
       this.previewHostnames.set(previewHostname, id);
-      return { id, hostname: previewHostname, port, expiresAt: expires, status: 'running' };
+      return { id, hostname: previewHostname, port, expiresAt: expires, status: 'running', isolation: runtime.isolation || 'process' };
     } catch (error) {
-      if (runtime?.server) await closeServer(runtime.server);
-      if (runtime?.child) await terminateAndWait(runtime.child);
-      else if (previewChild) await terminateAndWait(previewChild);
+      if (runtime?.stop) await runtime.stop().catch(() => {});
+      else {
+        if (runtime?.server) await closeServer(runtime.server);
+        if (runtime?.child) await terminateAndWait(runtime.child);
+      }
       await fs.promises.rm(previewRoot, { recursive: true, force: true });
       throw error;
     }
@@ -355,8 +411,11 @@ class DeploymentOperations extends ConfigurationOperations {
       : this.db.prepare('SELECT * FROM preview_deployments WHERE id = ? AND site_id = ?').get(numericId, numericSiteId);
     if (!row) throw new Error('Preview not found.');
     const runtime = this.previewRuntimes.get(row.id);
-    if (runtime?.server) await closeServer(runtime.server);
-    if (runtime?.child) await terminateAndWait(runtime.child);
+    if (runtime?.stop) await runtime.stop().catch(() => {});
+    else {
+      if (runtime?.server) await closeServer(runtime.server);
+      if (runtime?.child) await terminateAndWait(runtime.child);
+    }
     this.previewRuntimes.delete(row.id);
     this.previewHostnames.delete(String(row.hostname || '').toLowerCase());
     this.db.prepare('DELETE FROM preview_deployments WHERE id = ?').run(row.id);

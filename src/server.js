@@ -35,7 +35,8 @@ const {
   requireAuth,
   requireAdmin,
   sameOriginGuard,
-  createRateLimiter
+  createRateLimiter,
+  tokenHash
 } = require('./security');
 const { bool, validateSiteInput, safeRelativePath } = require('./validation');
 const { auditObfuscationCompatibility } = require('./obfuscation-audit');
@@ -75,6 +76,8 @@ const { CloudflareTunnelManager, DatabaseTunnelSettingsStore, SiteCloudflareTunn
 const { registerSiteRoutes } = require('./routes/sites');
 const { registerAdminRoutes } = require('./routes/admin');
 const { registerOperationsRoutes } = require('./routes/operations');
+const { normalizeIssuer: normalizeOidcIssuer, beginAuthorization, completeAuthorization } = require('./oidc');
+const { CloudflareReconciler } = require('./cloudflare-reconciler');
 
 const app = express();
 const DEPLOY_WEBHOOK_DUMMY_SECRET = crypto.randomBytes(32);
@@ -90,6 +93,7 @@ const cloudflareTunnels = new SiteCloudflareTunnelRegistry({
   db,
   log: (siteId, level, message) => manager.log(siteId, level, message)
 });
+const cloudflareReconciler = new CloudflareReconciler({ db, manager, getSetting });
 const legacyCloudflareTunnel = new CloudflareTunnelManager({
   settingsStore: new DatabaseTunnelSettingsStore(db),
   log: (level, message) => manager.log(null, level, `[Legacy tunnel] ${message}`)
@@ -324,12 +328,12 @@ function nextAvailableSitePort() {
 function writeSiteConfig(id, config) {
   db.prepare(`
     UPDATE sites SET
-      name = ?, slug = ?, bind_host = ?, port = ?, runtime_type = ?, proxy_target = ?, proxy_host_header = ?, proxy_timeout_ms = ?, install_command = ?, build_command = ?, build_output_dir = ?, entry_file = ?,
+      name = ?, slug = ?, bind_host = ?, port = ?, runtime_type = ?, runtime_preset = ?, start_command = ?, runtime_port_env = ?, working_directory = ?, proxy_target = ?, proxy_host_header = ?, proxy_timeout_ms = ?, install_command = ?, build_command = ?, build_output_dir = ?, entry_file = ?,
       node_entry = ?, install_dependencies = ?, minify = ?, obfuscate = ?, obfuscation_risk_acknowledged = ?, domain_only = ?, spa_fallback = ?,
       cache_seconds = ?, headers_json = ?, domain = ?, ssl_enabled = ?,
       cloudflare_enabled = ?, firewall_enabled = ?, firewall_json = ?, compression = ?, security_preset = ?, csp = ?,
-      health_check_path = ?, health_check_interval = ?, restart_policy = ?, max_restarts = ?, memory_limit_mb = ?,
-      max_connections = ?, edge_enabled = ?, runtime_isolation = ?, container_image = ?, cpu_limit = ?, pids_limit = ?,
+      health_check_path = ?, health_check_interval = ?, health_check_type = ?, health_check_command = ?, health_check_status_min = ?, health_check_status_max = ?, restart_policy = ?, max_restarts = ?, memory_limit_mb = ?,
+      max_connections = ?, edge_enabled = ?, runtime_isolation = ?, container_image = ?, container_mode = ?, container_port = ?, dockerfile_path = ?, compose_file = ?, compose_service = ?, buildpack_builder = ?, readiness_type = ?, readiness_path = ?, readiness_command = ?, readiness_status_min = ?, readiness_status_max = ?, startup_timeout_seconds = ?, shutdown_grace_seconds = ?, blue_green_drain_seconds = ?, manifest_enabled = ?, cloudflare_auto_sync = ?, cpu_limit = ?, pids_limit = ?,
       outbound_network = ?, anubis_enabled = ?, anubis_preset = ?, anubis_difficulty = ?, anubis_policy = ?,
       maintenance_enabled = ?, maintenance_html = ?, redirects_json = ?, error_pages_json = ?, cache_rules_json = ?,
       release_mode = ?, git_url = ?, git_branch = ?, preview_domain = ?, updated_at = CURRENT_TIMESTAMP
@@ -340,6 +344,10 @@ function writeSiteConfig(id, config) {
     config.bind_host,
     config.port,
     config.runtime_type,
+    config.runtime_preset,
+    config.start_command,
+    config.runtime_port_env,
+    config.working_directory,
     config.proxy_target,
     config.proxy_host_header,
     config.proxy_timeout_ms,
@@ -366,6 +374,10 @@ function writeSiteConfig(id, config) {
     config.csp,
     config.health_check_path,
     config.health_check_interval,
+    config.health_check_type,
+    config.health_check_command,
+    config.health_check_status_min,
+    config.health_check_status_max,
     config.restart_policy,
     config.max_restarts,
     config.memory_limit_mb,
@@ -373,6 +385,22 @@ function writeSiteConfig(id, config) {
     Number(config.edge_enabled),
     config.runtime_isolation,
     config.container_image,
+    config.container_mode,
+    config.container_port,
+    config.dockerfile_path,
+    config.compose_file,
+    config.compose_service,
+    config.buildpack_builder,
+    config.readiness_type,
+    config.readiness_path,
+    config.readiness_command,
+    config.readiness_status_min,
+    config.readiness_status_max,
+    config.startup_timeout_seconds,
+    config.shutdown_grace_seconds,
+    config.blue_green_drain_seconds,
+    Number(config.manifest_enabled),
+    Number(config.cloudflare_auto_sync),
     config.cpu_limit,
     config.pids_limit,
     Number(config.outbound_network),
@@ -395,7 +423,9 @@ function writeSiteConfig(id, config) {
 
 function requiredSiteFile(config) {
   if (config.runtime_type === 'proxy') return null;
-  return config.runtime_type === 'node' ? config.node_entry : config.entry_file;
+  if (config.runtime_type === 'node' && !config.start_command) return config.node_entry;
+  if (config.runtime_type === 'static') return config.entry_file;
+  return null;
 }
 
 function obfuscationWarning(report) {
@@ -444,12 +474,25 @@ function activeAdminCount() {
   return db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND active = 1").get().count;
 }
 
+function oidcSettings() {
+  return {
+    enabled: getSetting('oidc_enabled', '0') === '1',
+    issuer: getSetting('oidc_issuer', ''),
+    clientId: getSetting('oidc_client_id', ''),
+    clientSecretConfigured: Boolean(getSecretSetting(db, 'oidc_client_secret', '')),
+    autoProvision: getSetting('oidc_auto_provision', '0') === '1',
+    defaultRole: getSetting('oidc_default_role', 'user') === 'admin' ? 'admin' : 'user'
+  };
+}
+
 function integrationSettings() {
   return {
     cloudflareTokenConfigured: Boolean(getSecretSetting(db, 'cloudflare_api_token', '')),
     cloudflareZoneId: getSetting('cloudflare_zone_id', ''),
     cloudflareTargetIp: getSetting('cloudflare_target_ip', ''),
-    certbotEmail: getSetting('certbot_email', '')
+    certbotEmail: getSetting('certbot_email', ''),
+    cloudflareReconcileEnabled: getSetting('cloudflare_reconcile_enabled', '0') === '1',
+    cloudflareReconcileMinutes: Number(getSetting('cloudflare_reconcile_minutes', '15')) || 15
   };
 }
 
@@ -528,7 +571,7 @@ const routeContext = {
 
 const adminRouteContext = {
   app, requireAuth, requireAdmin, pluginManager, publicUser, multipart, pluginUpload, validatePluginArchiveFile, bool,
-  cleanupUploadedFiles, serializePluginMutation, integrationSettings, securitySettings, getSetting, setSetting, setSecretSetting,
+  cleanupUploadedFiles, serializePluginMutation, integrationSettings, securitySettings, oidcSettings, normalizeOidcIssuer, getSetting, setSetting, setSecretSetting,
   getSecretSetting, rotateMasterKey, verifyPassword, stepUpLimiter, writeCloudflareCredentials, recordAudit, manager, siteRows, getSiteOr404,
   syncCloudflareRecord, cloudflarePortWarning, syncCloudflareFirewall, acquireCertificateOperation, releaseCertificateOperation,
   stopRunningSitesOnPort, renewalNeedsPort80, issueCertificate, hasCertificate, restoreEnabledSites, renewCertificates, db,
@@ -554,7 +597,8 @@ app.get('/api/bootstrap', optionalAuth, (req, res) => {
     authenticated: Boolean(req.user),
     user: publicUser(req.user ? securityUser(req.user.id) : null),
     locale: getSetting('instance_locale', 'en'),
-    setupCompleted: req.user?.role !== 'admin' || getSetting('setup_completed', '0') === '1'
+    setupCompleted: req.user?.role !== 'admin' || getSetting('setup_completed', '0') === '1',
+    oidcEnabled: getSetting('oidc_enabled', '0') === '1' && Boolean(getSetting('oidc_issuer', '')) && Boolean(getSetting('oidc_client_id', ''))
   });
 });
 
@@ -604,6 +648,70 @@ app.get('/metrics', (req, res) => {
     return res.status(401).type('text/plain').send('Unauthorized');
   }
   res.type('text/plain; version=0.0.4').send(operationsManager.metricsText(performanceMonitor.payload()));
+});
+
+const OIDC_START_PATH = '/api/auth/oidc/start';
+const OIDC_CALLBACK_PATH = '/api/auth/oidc/callback';
+
+app.get(OIDC_START_PATH, authLimiter, async (req, res) => {
+  try {
+    if (getSetting('oidc_enabled', '0') !== '1') return res.status(404).type('text/plain').send('OIDC login is disabled.');
+    const issuer = getSetting('oidc_issuer', '');
+    const clientId = getSetting('oidc_client_id', '');
+    if (!issuer || !clientId) throw new Error('OIDC login is not fully configured.');
+    const redirectUri = `${requestOrigin(req)}/api/auth/oidc/callback`;
+    const location = await beginAuthorization({ issuer, clientId, redirectUri, db });
+    res.redirect(302, location);
+  } catch (error) { res.status(400).type('text/plain').send(`OIDC login could not start: ${error.message}`); }
+});
+
+app.get(OIDC_CALLBACK_PATH, authLimiter, async (req, res) => {
+  const fail = (message) => res.redirect(302, `/?oidc_error=${encodeURIComponent(String(message || 'OIDC login failed.').slice(0, 300))}`);
+  try {
+    if (req.query.error) return fail(req.query.error_description || req.query.error);
+    if (getSetting('oidc_enabled', '0') !== '1') return fail('OIDC login is disabled.');
+    const issuer = getSetting('oidc_issuer', '');
+    const clientId = getSetting('oidc_client_id', '');
+    const redirectUri = `${requestOrigin(req)}/api/auth/oidc/callback`;
+    const claims = await completeAuthorization({
+      issuer,
+      clientId,
+      clientSecret: getSecretSetting(db, 'oidc_client_secret', ''),
+      state: String(req.query.state || ''),
+      code: String(req.query.code || ''),
+      redirectUri,
+      db
+    });
+    const normalizedIssuer = normalizeOidcIssuer(issuer);
+    let identity = db.prepare('SELECT * FROM oidc_identities WHERE issuer = ? AND subject = ?').get(normalizedIssuer, String(claims.sub));
+    let user = identity ? securityUser(identity.user_id) : null;
+    if (!user) {
+      if (identity) throw new Error('The account linked to this OIDC identity no longer exists.');
+      if (getSetting('oidc_auto_provision', '0') !== '1') throw new Error('This OIDC identity has not been provisioned in SHAM.');
+      const rawName = String(claims.preferred_username || claims.email?.split('@')[0] || claims.name || `oidc-${String(claims.sub).slice(0, 12)}`);
+      let base = rawName.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^[^a-zA-Z0-9]+/, '').slice(0, 32);
+      if (base.length < 3) base = `oidc-${crypto.randomBytes(4).toString('hex')}`;
+      let username = base;
+      for (let index = 2; db.prepare('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE').get(username); index += 1) username = `${base.slice(0, 35 - String(index).length)}-${index}`;
+      const password = await hashPassword(crypto.randomBytes(48).toString('base64url'));
+      const role = getSetting('oidc_default_role', 'user') === 'admin' ? 'admin' : 'user';
+      const created = db.transaction(() => {
+        const result = db.prepare('INSERT INTO users (username, password_hash, password_salt, role, active) VALUES (?, ?, ?, ?, 1)').run(username, password.hash, password.salt, role);
+        db.prepare('INSERT INTO oidc_identities (issuer, subject, user_id, email, last_login_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)')
+          .run(normalizedIssuer, String(claims.sub), Number(result.lastInsertRowid), String(claims.email || '').slice(0, 320));
+        return Number(result.lastInsertRowid);
+      })();
+      user = securityUser(created);
+      recordAudit(user.id, 'auth.oidc.provision', { issuer: normalizedIssuer, role });
+    } else {
+      db.prepare('UPDATE oidc_identities SET email = ?, last_login_at = CURRENT_TIMESTAMP WHERE issuer = ? AND subject = ?')
+        .run(String(claims.email || identity.email || '').slice(0, 320), normalizedIssuer, String(claims.sub));
+    }
+    if (!user?.active) throw new Error('This SHAM account is disabled.');
+    setAuthCookie(req, res, issueToken(user));
+    recordAudit(user.id, 'auth.oidc.login', { issuer: normalizedIssuer });
+    res.redirect(302, '/');
+  } catch (error) { fail(error.message); }
 });
 
 app.post('/api/auth/register', authLimiter, async (req, res) => {
@@ -706,7 +814,40 @@ app.get('/api/security', requireAuth, (req, res) => {
   const passkeys = db.prepare('SELECT id, name, transports_json, created_at, last_used_at FROM passkeys WHERE user_id = ? ORDER BY id').all(req.user.id).map((row) => ({
     id: row.id, name: row.name, transports: (() => { try { return JSON.parse(row.transports_json); } catch { return []; } })(), createdAt: row.created_at, lastUsedAt: row.last_used_at
   }));
-  res.json({ user: publicUser(user), passkeys, recoveryCodesRemaining: (() => { try { return JSON.parse(user.recovery_codes_json || '[]').length; } catch { return 0; } })(), webauthnAvailable: true });
+  const apiTokens = db.prepare('SELECT id, name, scopes_json, last_used_at AS lastUsedAt, expires_at AS expiresAt, created_at AS createdAt FROM api_tokens WHERE user_id = ? ORDER BY id DESC').all(req.user.id).map((row) => ({
+    ...row, scopes: (() => { try { return JSON.parse(row.scopes_json || '[]'); } catch { return []; } })(), scopes_json: undefined
+  }));
+  res.json({ user: publicUser(user), passkeys, apiTokens, recoveryCodesRemaining: (() => { try { return JSON.parse(user.recovery_codes_json || '[]').length; } catch { return 0; } })(), webauthnAvailable: true });
+});
+
+app.post('/api/security/api-tokens', requireAuth, stepUpLimiter, async (req, res) => {
+  if (req.authType !== 'session') return res.status(403).json({ error: 'Create API tokens from an authenticated browser session.' });
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!(await verifyPassword(String(req.body.password || ''), user.password_salt, user.password_hash))) return res.status(401).json({ error: 'Password confirmation failed.' });
+  const name = String(req.body.name || '').trim().slice(0, 100);
+  if (!name) return res.status(400).json({ error: 'Token name is required.' });
+  const allowed = new Set(['read', 'logs:read', 'deploy', 'sites:control', '*']);
+  const scopes = [...new Set((Array.isArray(req.body.scopes) ? req.body.scopes : []).map(String).filter((scope) => allowed.has(scope)))];
+  if (!scopes.length) return res.status(400).json({ error: 'Select at least one API token scope.' });
+  if (scopes.includes('*') && scopes.length > 1) scopes.splice(0, scopes.length, '*');
+  const expiresDays = Number(req.body.expiresDays || 0);
+  if (!Number.isFinite(expiresDays) || expiresDays < 0 || expiresDays > 3650) return res.status(400).json({ error: 'Token expiry must be between 0 and 3650 days.' });
+  const token = `sham_pat_${crypto.randomBytes(32).toString('base64url')}`;
+  const expiresAt = expiresDays > 0 ? new Date(Date.now() + expiresDays * 86400_000).toISOString() : null;
+  const result = db.prepare('INSERT INTO api_tokens (user_id, name, token_hash, scopes_json, expires_at) VALUES (?, ?, ?, ?, ?)').run(req.user.id, name, tokenHash(token), JSON.stringify(scopes), expiresAt);
+  recordAudit(req.user.id, 'security.api-token.create', { id: Number(result.lastInsertRowid), name, scopes, expiresAt });
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(201).json({ token, apiToken: { id: Number(result.lastInsertRowid), name, scopes, expiresAt, createdAt: new Date().toISOString() } });
+});
+
+app.delete('/api/security/api-tokens/:id', requireAuth, stepUpLimiter, async (req, res) => {
+  if (req.authType !== 'session') return res.status(403).json({ error: 'Revoke API tokens from an authenticated browser session.' });
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!(await verifyPassword(String(req.body.password || ''), user.password_salt, user.password_hash))) return res.status(401).json({ error: 'Password confirmation failed.' });
+  const result = db.prepare('DELETE FROM api_tokens WHERE id = ? AND user_id = ?').run(Number(req.params.id), req.user.id);
+  if (!result.changes) return res.status(404).json({ error: 'API token not found.' });
+  recordAudit(req.user.id, 'security.api-token.delete', { id: Number(req.params.id) });
+  res.status(204).end();
 });
 
 app.post('/api/security/totp/setup', requireAuth, stepUpLimiter, async (req, res) => {
@@ -836,6 +977,7 @@ const dashboardServer = app.listen(DASHBOARD_PORT, DASHBOARD_HOST, async () => {
   console.log(`SHAM dashboard listening on http://${dashboardUrlHost}:${DASHBOARD_PORT}`);
   console.log(`SHAM data path: ${DATA_DIR}`);
   try {
+    await manager.reconcileRuntimes();
     await manager.startEnabledSites();
     await edgeProxy.start();
   } catch (error) {
@@ -843,6 +985,7 @@ const dashboardServer = app.listen(DASHBOARD_PORT, DASHBOARD_HOST, async () => {
   }
   try {
     await Promise.all([cloudflareTunnels.startEnabled(), legacyCloudflareTunnel.start()]);
+    await cloudflareReconciler.tick();
   } catch (error) {
     console.error(`Could not start configured Cloudflare Tunnels: ${error.message}`);
   } finally {
@@ -879,6 +1022,7 @@ async function shutdown(signal) {
   });
   dashboardServer.closeIdleConnections?.();
 
+  cloudflareReconciler.stop();
   await stopIntegrationProcesses();
   await Promise.allSettled([performanceMonitor.stop(), dependencyScanner.shutdown(), snapshotManager.shutdown(), operationsManager.shutdown(), updateManager.shutdown(), cloudflareTunnels.shutdown(), legacyCloudflareTunnel.shutdown(), edgeProxy.stop()]);
   await stopUploadWorkers();

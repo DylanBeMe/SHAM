@@ -3,7 +3,7 @@
 function registerAdminRoutes(ctx) {
   const {
     app, requireAuth, requireAdmin, pluginManager, publicUser, multipart, pluginUpload, validatePluginArchiveFile,
-    bool, cleanupUploadedFiles, serializePluginMutation, integrationSettings, securitySettings, getSetting, setSetting,
+    bool, cleanupUploadedFiles, serializePluginMutation, integrationSettings, securitySettings, oidcSettings, normalizeOidcIssuer, getSetting, setSetting,
     setSecretSetting, getSecretSetting, rotateMasterKey, verifyPassword, stepUpLimiter, writeCloudflareCredentials, recordAudit,
     manager, siteRows, getSiteOr404, syncCloudflareRecord, cloudflarePortWarning, syncCloudflareFirewall,
     acquireCertificateOperation, releaseCertificateOperation, stopRunningSitesOnPort, renewalNeedsPort80, issueCertificate,
@@ -72,7 +72,7 @@ app.get('/api/plugins', requireAuth, (req, res) => res.json({
   });
 
   app.get('/api/admin/settings', requireAuth, requireAdmin, (_req, res) => {
-    res.json({ registrationEnabled: registrationEnabled(), integrations: integrationSettings(), security: securitySettings() });
+    res.json({ registrationEnabled: registrationEnabled(), integrations: integrationSettings(), security: securitySettings(), oidc: oidcSettings() });
   });
 
   app.put('/api/admin/settings/security', requireAuth, requireAdmin, (req, res) => {
@@ -117,6 +117,31 @@ app.get('/api/plugins', requireAuth, (req, res) => res.json({
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
+  app.put('/api/admin/settings/oidc', requireAuth, requireAdmin, (req, res) => {
+    try {
+      const enabled = bool(req.body.enabled, false);
+      const issuer = String(req.body.issuer || '').trim();
+      const clientId = String(req.body.clientId || '').trim().slice(0, 500);
+      const autoProvision = bool(req.body.autoProvision, false);
+      const defaultRole = String(req.body.defaultRole || 'user') === 'admin' ? 'admin' : 'user';
+      const normalizedIssuer = issuer ? normalizeOidcIssuer(issuer) : '';
+      if (enabled && (!normalizedIssuer || !clientId)) throw new Error('OIDC issuer and client ID are required when SSO is enabled.');
+      let clientSecret = getSecretSetting(db, 'oidc_client_secret', '');
+      if (typeof req.body.clientSecret === 'string' && req.body.clientSecret.trim()) clientSecret = req.body.clientSecret.trim();
+      if (bool(req.body.clearClientSecret, false)) clientSecret = '';
+      db.transaction(() => {
+        setSetting('oidc_enabled', enabled ? '1' : '0');
+        setSetting('oidc_issuer', normalizedIssuer);
+        setSetting('oidc_client_id', clientId);
+        setSetting('oidc_auto_provision', autoProvision ? '1' : '0');
+        setSetting('oidc_default_role', defaultRole);
+        setSecretSetting(db, 'oidc_client_secret', clientSecret);
+      })();
+      recordAudit(req.user.id, 'settings.oidc', { enabled, issuer: normalizedIssuer, autoProvision, defaultRole, secretConfigured: Boolean(clientSecret) });
+      res.json({ oidc: oidcSettings() });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+
   app.patch('/api/admin/settings/registration', requireAuth, requireAdmin, (req, res) => {
     const enabled = bool(req.body.enabled, false);
     setSetting('registration_enabled', enabled ? '1' : '0');
@@ -129,6 +154,9 @@ app.get('/api/plugins', requireAuth, (req, res) => res.json({
       const zoneId = String(req.body.cloudflareZoneId || '').trim();
       const targetIp = String(req.body.cloudflareTargetIp || '').trim();
       const email = String(req.body.certbotEmail || '').trim();
+      const cloudflareReconcileEnabled = bool(req.body.cloudflareReconcileEnabled, false);
+      const cloudflareReconcileMinutes = Number(req.body.cloudflareReconcileMinutes || 15);
+      if (!Number.isInteger(cloudflareReconcileMinutes) || cloudflareReconcileMinutes < 1 || cloudflareReconcileMinutes > 1440) throw new Error('Cloudflare reconciliation interval must be between 1 and 1440 minutes.');
       if (zoneId && !/^[a-fA-F0-9]{32}$/.test(zoneId)) throw new Error('Cloudflare zone ID must be a 32-character hexadecimal ID.');
       if (targetIp && net.isIP(targetIp) !== 4) throw new Error('Cloudflare origin must be a valid IPv4 address for the A record.');
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Certbot email address is not valid.');
@@ -143,6 +171,8 @@ app.get('/api/plugins', requireAuth, (req, res) => res.json({
           setSetting('cloudflare_zone_id', zoneId);
           setSetting('cloudflare_target_ip', targetIp);
           setSetting('certbot_email', email);
+          setSetting('cloudflare_reconcile_enabled', cloudflareReconcileEnabled ? '1' : '0');
+          setSetting('cloudflare_reconcile_minutes', String(cloudflareReconcileMinutes));
         })();
       } catch (error) {
         try { writeCloudflareCredentials(previousToken); }

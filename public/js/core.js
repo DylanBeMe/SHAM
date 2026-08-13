@@ -119,7 +119,13 @@ async function api(url, options = {}) {
     toast('Your session expired. Sign in again.', 'warning');
     setTimeout(() => location.reload(), 800);
   }
-  if (!response.ok) throw new Error(payload.error || `Request failed with HTTP ${response.status}.`);
+  if (!response.ok) {
+    const error = new Error(payload.error || `Request failed with HTTP ${response.status}.`);
+    error.status = response.status;
+    error.code = payload.code || '';
+    error.payload = payload;
+    throw error;
+  }
   return payload;
 }
 
@@ -299,6 +305,7 @@ function showMfaLogin(result) {
   $('#auth-description').textContent = 'Enter an authenticator or recovery code, or use a registered passkey.';
   $('#auth-submit').textContent = 'Verify code';
   $('#auth-switch').hidden = true;
+  $('#auth-oidc').hidden = true;
   $('#auth-passkey').hidden = !state.mfaMethods.includes('passkey') || !window.PublicKeyCredential;
   requestAnimationFrame(() => $('#auth-mfa-code').focus());
 }
@@ -315,6 +322,7 @@ function setAuthMode(mode) {
   $('#auth-password').autocomplete = register ? 'new-password' : 'current-password';
   $('#auth-switch').hidden = state.bootstrap?.needsSetup || !state.bootstrap?.registrationEnabled;
   $('#auth-switch').textContent = register ? 'Back to sign in' : 'Create an account';
+  $('#auth-oidc').hidden = register || state.bootstrap?.needsSetup || !state.bootstrap?.oidcEnabled || Boolean(state.mfaToken);
   $('#auth-error').textContent = '';
 }
 
@@ -359,6 +367,8 @@ $('#auth-passkey').addEventListener('click', async (event) => {
 async function bootstrap() {
   try {
     state.bootstrap = await api('/api/bootstrap');
+    const oidcError = new URLSearchParams(location.search).get('oidc_error');
+    if (oidcError) history.replaceState(null, '', location.pathname + location.hash);
     if (state.bootstrap.authenticated) {
       state.user = state.bootstrap.user;
       applyLocale(state.bootstrap.locale);
@@ -369,6 +379,7 @@ async function bootstrap() {
       $('#dashboard-view').hidden = true;
       applyLocale(state.bootstrap.locale);
       setAuthMode(state.bootstrap.needsSetup ? 'register' : 'login');
+      if (oidcError) $('#auth-error').textContent = oidcError;
     }
   } catch (error) {
     $('#auth-error').textContent = `SHAM could not start: ${error.message}`;

@@ -1,6 +1,7 @@
 'use strict';
 
 const { DeploymentOperations } = require('./deployments');
+const { PACK_BIN, NIXPACKS_BIN } = require('../config');
 const { fs, path, os, http, net, crypto, spawn, express, httpProxy, DATA_DIR, SITES_DIR, RELEASES_DIR, PREVIEWS_DIR, BACKUPS_DIR, SITE_DATA_DIR, DOCKER_BIN, GIT_BIN, TAR_BIN, RESTIC_BIN, AWS_BIN, SFTP_BIN, ANUBIS_IMAGE, JOB_POLL_INTERVAL_MS, JOB_TIMEOUT_MS, BACKUP_TIMEOUT_MS, GIT_TIMEOUT_MS, PREVIEW_TTL_HOURS, HTTP_REQUEST_TIMEOUT_MS, encrypt, decrypt, getSecretSetting, setSecretSetting, safeRelativePath, runtimeEnvironment, buildEnvironment, operatorEnvironment, appendTail, commandAvailable, processOptions, terminate, terminateAndWait, runProcess, runConfiguredCommand, parseField, parseCron, cronMatches, nextCronDate, safeName, pathInside, sftpQuote, freePort, closeServer, siteRoot, requiredFile, ensureRequiredFile, validateGitUrl, validateBranch } = require('./shared');
 
 class OperationsManager extends DeploymentOperations {
@@ -222,6 +223,8 @@ class OperationsManager extends DeploymentOperations {
               ? 'The optional Docker socket overlay is not enabled.'
               : 'SHAM_DOCKER_HOST_DATA_PATH is not configured.',
           git: commandAvailable(GIT_BIN),
+          buildpacks: commandAvailable(PACK_BIN),
+          nixpacks: commandAvailable(NIXPACKS_BIN),
           anubis: docker && Boolean(ANUBIS_IMAGE),
           anubisImage: ANUBIS_IMAGE,
           containerizedSham

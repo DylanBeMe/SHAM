@@ -353,14 +353,14 @@ class ConfigurationOperations {
     return this.backupSettings();
   }
 
-  async createBackup({ provider = null } = {}) {
+  async createBackup({ provider = null, skipRetention = false } = {}) {
     if (this.backupPromise) return this.backupPromise;
-    const operation = this._createBackup(provider).finally(() => { if (this.backupPromise === operation) this.backupPromise = null; });
+    const operation = this._createBackup(provider, { skipRetention }).finally(() => { if (this.backupPromise === operation) this.backupPromise = null; });
     this.backupPromise = operation;
     return operation;
   }
 
-  async _createBackup(providerOverride) {
+  async _createBackup(providerOverride, { skipRetention = false } = {}) {
     const settings = this._backupSettings();
     const provider = providerOverride || settings.provider;
     if (!['local', 'restic', 's3', 'sftp'].includes(provider)) throw new Error('Backup provider is invalid.');
@@ -462,12 +462,14 @@ class ConfigurationOperations {
       }
 
       this.db.prepare("UPDATE backup_runs SET destination = ?, status = 'success', bytes = ?, detail = 'Archive integrity verified', finished_at = CURRENT_TIMESTAMP WHERE id = ?").run(String(destination).slice(0, 2000), stat.size, runId);
-      const retention = Math.min(Math.max(Number(config.retention) || 14, 1), 365);
-      const localBackups = (await fs.promises.readdir(BACKUPS_DIR)).filter((name) => /^sham-backup-.*\.tar\.gz$/.test(name)).sort().reverse();
-      await Promise.all(localBackups.slice(retention).map((name) => fs.promises.rm(path.join(BACKUPS_DIR, name), { force: true })));
-      if (externalLocalDirectory) {
-        const externalBackups = (await fs.promises.readdir(externalLocalDirectory)).filter((name) => /^sham-backup-.*\.tar\.gz$/.test(name)).sort().reverse();
-        await Promise.all(externalBackups.slice(retention).map((name) => fs.promises.rm(path.join(externalLocalDirectory, name), { force: true })));
+      if (!skipRetention) {
+        const retention = Math.min(Math.max(Number(config.retention) || 14, 1), 365);
+        const localBackups = (await fs.promises.readdir(BACKUPS_DIR)).filter((name) => /^sham-backup-.*\.tar\.gz$/.test(name)).sort().reverse();
+        await Promise.all(localBackups.slice(retention).map((name) => fs.promises.rm(path.join(BACKUPS_DIR, name), { force: true })));
+        if (externalLocalDirectory) {
+          const externalBackups = (await fs.promises.readdir(externalLocalDirectory)).filter((name) => /^sham-backup-.*\.tar\.gz$/.test(name)).sort().reverse();
+          await Promise.all(externalBackups.slice(retention).map((name) => fs.promises.rm(path.join(externalLocalDirectory, name), { force: true })));
+        }
       }
       this.manager.log(null, 'info', `Backup ${filename} completed using ${provider}; archive integrity was verified.`);
       return { id: runId, filename, bytes: stat.size, provider, destination, verified: true };

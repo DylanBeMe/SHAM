@@ -16,6 +16,7 @@ function renderSecurity(data) {
     ? '<p class="muted">Your account requires an authenticator or recovery code after password login.</p><button class="button danger" data-totp-action="disable" type="button">Disable TOTP</button>'
     : '<p class="muted">Compatible with standard authenticator applications.</p><button class="button primary" data-totp-action="setup" type="button">Set up authenticator</button>';
   $('#passkey-list').innerHTML = data.passkeys?.length ? data.passkeys.map((key) => `<div class="event-item actionable" data-passkey-id="${key.id}"><span class="event-icon">⌾</span><div><strong>${escapeHtml(key.name)}</strong><p>${key.lastUsedAt ? `Last used ${escapeHtml(formatDate(key.lastUsedAt))}` : 'Not used yet'} · added ${escapeHtml(formatDate(key.createdAt))}</p></div><button class="button danger" data-delete-passkey type="button">Delete</button></div>`).join('') : '<div class="empty-state compact"><p>No passkeys are registered.</p></div>';
+  $('#api-token-list').innerHTML = data.apiTokens?.length ? data.apiTokens.map((token) => `<div class="event-item actionable" data-api-token-id="${token.id}"><span class="event-icon">⌁</span><div><strong>${escapeHtml(token.name)}</strong><p>${escapeHtml((token.scopes || []).join(', '))}${token.expiresAt ? ` · expires ${escapeHtml(formatDate(token.expiresAt))}` : ' · no expiry'}${token.lastUsedAt ? ` · last used ${escapeHtml(formatDate(token.lastUsedAt))}` : ''}</p></div><button class="button danger" data-delete-api-token type="button">Revoke</button></div>`).join('') : '<div class="empty-state compact"><p>No API tokens have been created.</p></div>';
 }
 async function loadSecurity() {
   const requestId = ++state.securityRequest;
@@ -31,6 +32,33 @@ async function loadSecurity() {
   }
 }
 $('#refresh-security').addEventListener('click', loadSecurity);
+$('#create-api-token').addEventListener('click', async (event) => {
+  const name = await requestAction({ title: 'Create API token', message: 'Name this token for the machine or workflow that will use it.', confirmLabel: 'Continue', inputLabel: 'Token name', placeholder: 'Deployment CLI' });
+  if (!name) return;
+  const password = await requestAction({ title: 'Confirm API token creation', message: 'Confirm your password. The new token will have read, logs, deployment, and site-control scopes.', confirmLabel: 'Create token', inputLabel: 'Password', inputType: 'password', autocomplete: 'current-password' });
+  if (!password) return;
+  setBusy(event.currentTarget, true, 'Creating…');
+  try {
+    const result = await api('/api/security/api-tokens', { method: 'POST', body: { name, password, scopes: ['read', 'logs:read', 'deploy', 'sites:control'] } });
+    $('#api-token-value').textContent = result.token;
+    showModal($('#api-token-dialog'));
+    await loadSecurity();
+  } catch (error) { toast(error.message, 'error'); }
+  finally { setBusy(event.currentTarget, false); }
+});
+$('#api-token-list').addEventListener('click', async (event) => {
+  const button = event.target.closest('[data-delete-api-token]');
+  if (!button) return;
+  const item = button.closest('[data-api-token-id]');
+  const password = await requestAction({ title: 'Revoke this API token?', message: 'Confirm your password. Any CLI or CI job using this token will immediately lose access.', confirmLabel: 'Revoke token', danger: true, inputLabel: 'Password', inputType: 'password', autocomplete: 'current-password' });
+  if (!password) return;
+  try { await api(`/api/security/api-tokens/${item.dataset.apiTokenId}`, { method: 'DELETE', body: { password } }); toast('API token revoked.'); await loadSecurity(); }
+  catch (error) { toast(error.message, 'error'); }
+});
+$('#copy-api-token').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('#api-token-value').textContent); toast('API token copied.'); }
+  catch { toast('Could not access the clipboard. Copy the token manually.', 'warning'); }
+});
 $('#totp-content').addEventListener('click', async (event) => {
   const button = event.target.closest('[data-totp-action]');
   if (!button) return;
@@ -144,7 +172,7 @@ async function openSiteTools(site) {
   $('#site-tools-title').textContent = `${site.name} safety tools`;
   $('#snapshot-list').innerHTML = '<div class="empty-state compact"><p>Loading snapshots…</p></div>';
   $('#dependency-report').innerHTML = '<div class="empty-state compact"><p>Loading the latest scan…</p></div>';
-  $('#run-dependency-scan').disabled = site.runtime_type !== 'node';
+  $('#run-dependency-scan').disabled = site.runtime_type === 'proxy';
   selectSiteTool('snapshots');
   showModal($('#site-tools-dialog'));
   const [snapshots, scan] = await Promise.allSettled([api(`/api/sites/${site.id}/snapshots`), api(`/api/sites/${site.id}/dependency-scan`)]);

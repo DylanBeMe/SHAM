@@ -1,5 +1,7 @@
 'use strict';
 
+const { siteRoot, legacySiteRoot, dockerHostDataPath } = require('../site-paths');
+
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -256,6 +258,33 @@ function hydrateSite(row) {
     anubis_enabled: Boolean(row.anubis_enabled),
     maintenance_enabled: Boolean(row.maintenance_enabled),
     release_mode: Boolean(row.release_mode),
+    active_release_directory: row.active_release_directory || '',
+    runtime_preset: row.runtime_preset || (row.runtime_type === 'node' ? 'node' : row.runtime_type === 'container' ? row.container_mode || 'image' : ''),
+    start_command: row.start_command || '',
+    runtime_port_env: row.runtime_port_env || 'PORT',
+    working_directory: row.working_directory || '',
+    readiness_type: row.readiness_type || 'tcp',
+    readiness_path: row.readiness_path || '/',
+    readiness_command: row.readiness_command || '',
+    readiness_status_min: Number(row.readiness_status_min || 200),
+    readiness_status_max: Number(row.readiness_status_max || 399),
+    startup_timeout_seconds: Number(row.startup_timeout_seconds || 30),
+    shutdown_grace_seconds: Number(row.shutdown_grace_seconds ?? 10),
+    blue_green_drain_seconds: Number(row.blue_green_drain_seconds ?? 5),
+    manifest_enabled: row.manifest_enabled === undefined ? true : Boolean(row.manifest_enabled),
+    cloudflare_auto_sync: Boolean(row.cloudflare_auto_sync),
+    container_mode: row.container_mode || 'image',
+    container_port: Number(row.container_port || 3000),
+    dockerfile_path: row.dockerfile_path || 'Dockerfile',
+    compose_file: row.compose_file || 'compose.yaml',
+    compose_service: row.compose_service || 'app',
+    buildpack_builder: row.buildpack_builder || '',
+    runtime_manifest_hash: row.runtime_manifest_hash || '',
+    runtime_manifest_approved_hash: row.runtime_manifest_approved_hash || '',
+    health_check_type: row.health_check_type || 'http',
+    health_check_command: row.health_check_command || '',
+    health_check_status_min: Number(row.health_check_status_min || 200),
+    health_check_status_max: Number(row.health_check_status_max || 499),
     proxy_target: row.proxy_target || '',
     proxy_host_header: row.proxy_host_header || '',
     proxy_timeout_ms: Number(row.proxy_timeout_ms || 30000),
@@ -404,5 +433,5 @@ module.exports = {
   INTERNAL_EDGE_TOKEN, REQUEST_IDENTITY, appendTail, cacheEntryBytes, responseChunkBytes, processOptions, terminateChild,
   ensureDockerInternalNetwork, terminateAndWait, realFileInside, realFileInsideAsync, hostForUrl, normalizeIp, requestHostname,
   TRUSTED_EDGE_RANGES, trustedEdgePeers, trustedEdgePeer, requestIdentity, buildIpBlockList, ipMatchesList, hydrateSite, listen, closeServer,
-  freePort, waitForPort, siteIsolation, dockerContainerName
+  freePort, waitForPort, siteIsolation, dockerContainerName, siteRoot, legacySiteRoot, dockerHostDataPath
 };
