@@ -108,7 +108,9 @@ class SiteManager extends DeliverySiteManager {
     try { target = new URL(site.proxy_target); }
     catch { throw new Error('Reverse proxy target must be a valid HTTP or HTTPS URL.'); }
     if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Reverse proxy target must use HTTP or HTTPS.');
-    const proxy = httpProxy.createProxyServer({ target: target.href, ws: true, xfwd: true, changeOrigin: true, timeout: HTTP_REQUEST_TIMEOUT_MS, proxyTimeout: HTTP_REQUEST_TIMEOUT_MS });
+    const upstreamTimeout = Math.min(Math.max(Number(site.proxy_timeout_ms || HTTP_REQUEST_TIMEOUT_MS), 1000), 300000);
+    const proxyHeaders = site.proxy_host_header ? { Host: site.proxy_host_header } : undefined;
+    const proxy = httpProxy.createProxyServer({ target: target.href, ws: true, xfwd: true, changeOrigin: !site.proxy_host_header, headers: proxyHeaders, timeout: upstreamTimeout, proxyTimeout: upstreamTimeout });
     proxy.on('proxyRes', (_proxyRes, proxyReq, res) => { this.applyHeaders(site, res, proxyReq); const current = this.errors.get(site.id); if (current?.startsWith('Proxy: ')) this.errors.delete(site.id); });
     proxy.on('error', (error, _req, responseOrSocket) => {
       this.errors.set(site.id, `Proxy: ${error.message}`);
@@ -278,6 +280,7 @@ class SiteManager extends DeliverySiteManager {
     const timer = this.restartTimers.get(numericId);
     if (timer) clearTimeout(timer);
     this.restartTimers.delete(numericId);
+    this.activeDeploymentIds.delete(numericId);
     this.events = this.events.filter((event) => event.siteId !== numericId);
     for (const row of this.pendingRuntimeLogs) if (Number(row.siteId) === numericId) row.siteId = null;
   }

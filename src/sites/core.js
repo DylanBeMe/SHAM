@@ -14,6 +14,12 @@ class CoreSiteManager {
     this.installStopping = false;
     this.errors = new Map();
     this.events = [];
+    this.activeDeploymentIds = new Map();
+    try {
+      for (const row of db.prepare("SELECT site_id AS siteId, id FROM site_deployments WHERE status = 'running' ORDER BY id").all()) {
+        this.activeDeploymentIds.set(Number(row.siteId), Number(row.id));
+      }
+    } catch { /* Older/incomplete databases are migrated by db.js before normal startup. */ }
     this.minifyCache = new Map();
     this.minifyCacheBytes = 0;
     this.minifyPending = new Map();
@@ -91,15 +97,15 @@ class CoreSiteManager {
         this.writeVisitorStats.run(values.siteId, values.ip, values.country, values.clientType || 'unknown', values.userAgent || '', values.requests, values.bytes, values.errors);
       }
     });
-    this.writeRuntimeLog = db.prepare('INSERT INTO runtime_logs (site_id, level, message, context_json) VALUES (?, ?, ?, ?)');
+    this.writeRuntimeLog = db.prepare('INSERT INTO runtime_logs (site_id, level, message, context_json, deployment_id) VALUES (?, ?, ?, ?, ?)');
     this.writeRuntimeLogsTransaction = db.transaction((rows) => {
       for (const row of rows) {
         try {
-          this.writeRuntimeLog.run(row.siteId, row.level, row.message, row.contextJson);
+          this.writeRuntimeLog.run(row.siteId, row.level, row.message, row.contextJson, row.deploymentId);
         } catch (error) {
           const foreignKeyFailure = row.siteId != null && (error.code === 'SQLITE_CONSTRAINT_FOREIGNKEY' || /FOREIGN KEY constraint failed/i.test(error.message));
           if (!foreignKeyFailure) throw error;
-          this.writeRuntimeLog.run(null, row.level, row.message, row.contextJson);
+          this.writeRuntimeLog.run(null, row.level, row.message, row.contextJson, row.deploymentId);
         }
       }
     });
@@ -237,6 +243,8 @@ class CoreSiteManager {
   }
 
   log(siteId, level, message, context = null) {
+    const deploymentId = Number(context?.deploymentId) || Number(this.activeDeploymentIds.get(Number(siteId))) || null;
+    context = deploymentId && (!context || !context.deploymentId) ? { ...(context || {}), deploymentId } : context;
     let contextJson = null;
     if (context != null) {
       try { contextJson = JSON.stringify(context); }
@@ -247,6 +255,7 @@ class CoreSiteManager {
     this.events = this.events.slice(0, 500);
     this.pendingRuntimeLogs.push({
       siteId: siteId || null,
+      deploymentId,
       level: level === 'error' ? 'error' : 'info',
       message: event.message,
       contextJson

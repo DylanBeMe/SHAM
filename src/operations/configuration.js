@@ -66,6 +66,15 @@ class ConfigurationOperations {
       .map((row) => ({ ...row, value: row.secret ? '' : row.value, secret: Boolean(row.secret), configured: true }));
   }
 
+  revealEnvironmentSecret(siteId, key) {
+    const normalizedKey = String(key || '').trim().toUpperCase();
+    if (!/^[A-Z_][A-Z0-9_]{0,127}$/.test(normalizedKey)) throw new Error('Environment variable name is invalid.');
+    const row = this.db.prepare('SELECT value, secret FROM site_env WHERE site_id = ? AND key = ?').get(Number(siteId), normalizedKey);
+    if (!row) throw new Error('Environment variable not found.');
+    if (!row.secret) return { key: normalizedKey, value: String(row.value || ''), secret: false };
+    return { key: normalizedKey, value: decrypt(row.value), secret: true };
+  }
+
   saveEnvironment(siteId, variables) {
     if (!Array.isArray(variables) || variables.length > 200) throw new Error('Environment variables must be an array with at most 200 entries.');
     const keep = [];

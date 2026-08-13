@@ -143,6 +143,9 @@ ensureColumn('sites', 'git_url', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('sites', 'git_branch', "TEXT NOT NULL DEFAULT 'main'");
 ensureColumn('sites', 'preview_domain', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('sites', 'proxy_target', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'proxy_host_header', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'proxy_timeout_ms', 'INTEGER NOT NULL DEFAULT 30000');
+ensureColumn('sites', 'pinned', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('sites', 'install_command', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('sites', 'build_command', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('sites', 'build_output_dir', "TEXT NOT NULL DEFAULT ''");
@@ -153,6 +156,7 @@ ensureColumn('users', 'recovery_codes_json', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('plugins', 'permissions_json', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('plugins', 'signature_status', "TEXT NOT NULL DEFAULT 'unsigned'");
 ensureColumn('plugins', 'isolation', "TEXT NOT NULL DEFAULT 'in-process'");
+ensureColumn('runtime_logs', 'deployment_id', 'INTEGER');
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS site_visitor_stats (
@@ -346,6 +350,7 @@ db.exec(`
     source TEXT NOT NULL,
     directory_name TEXT NOT NULL,
     commit_sha TEXT,
+    deployment_id INTEGER,
     status TEXT NOT NULL DEFAULT 'ready',
     active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -423,6 +428,7 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_runtime_logs_created ON runtime_logs(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_runtime_logs_site ON runtime_logs(site_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_runtime_logs_deployment ON runtime_logs(deployment_id, created_at ASC);
   CREATE INDEX IF NOT EXISTS idx_dependency_scans_site ON dependency_scans(site_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_snapshots_site ON site_snapshots(site_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_performance_samples_time ON performance_samples(sampled_at DESC);
@@ -470,7 +476,9 @@ db.exec(`
 
 ensureColumn('site_visitor_stats', 'client_type', "TEXT NOT NULL DEFAULT 'unknown'");
 ensureColumn('site_visitor_stats', 'user_agent', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('site_releases', 'deployment_id', 'INTEGER');
 db.exec('CREATE INDEX IF NOT EXISTS idx_site_visitor_stats_client ON site_visitor_stats(client_type, last_request_at DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_site_releases_deployment ON site_releases(deployment_id)');
 
 function tightenDatabasePermissions() {
   if (process.platform === 'win32') return;

@@ -323,7 +323,7 @@ function nextAvailableSitePort() {
 function writeSiteConfig(id, config) {
   db.prepare(`
     UPDATE sites SET
-      name = ?, slug = ?, bind_host = ?, port = ?, runtime_type = ?, proxy_target = ?, install_command = ?, build_command = ?, build_output_dir = ?, entry_file = ?,
+      name = ?, slug = ?, bind_host = ?, port = ?, runtime_type = ?, proxy_target = ?, proxy_host_header = ?, proxy_timeout_ms = ?, install_command = ?, build_command = ?, build_output_dir = ?, entry_file = ?,
       node_entry = ?, install_dependencies = ?, minify = ?, obfuscate = ?, obfuscation_risk_acknowledged = ?, domain_only = ?, spa_fallback = ?,
       cache_seconds = ?, headers_json = ?, domain = ?, ssl_enabled = ?,
       cloudflare_enabled = ?, firewall_enabled = ?, firewall_json = ?, compression = ?, security_preset = ?, csp = ?,
@@ -340,6 +340,8 @@ function writeSiteConfig(id, config) {
     config.port,
     config.runtime_type,
     config.proxy_target,
+    config.proxy_host_header,
+    config.proxy_timeout_ms,
     config.install_command,
     config.build_command,
     config.build_output_dir,
@@ -424,7 +426,7 @@ function siteRows() {
     SELECT sites.*, users.username AS created_by_username
     FROM sites
     LEFT JOIN users ON users.id = sites.created_by
-    ORDER BY sites.created_at DESC, sites.id DESC
+    ORDER BY sites.pinned DESC, sites.created_at DESC, sites.id DESC
   `).all().map((row) => manager.decorate(hydrateSite(row)));
 }
 
@@ -535,7 +537,7 @@ const adminRouteContext = {
 const operationsRouteContext = {
   app, requireAuth, requireAdmin, webhookLimiter, serializeSiteMutation, db, crypto, DEPLOY_WEBHOOK_DUMMY_SECRET,
   operationsManager, manager, recordAudit, getSiteOr404, bool, validateSiteInput, uniqueSlug, writeSiteConfig,
-  getSecretSetting, setSecretSetting, getSetting, setSetting, cloudflareTunnels, legacyCloudflareTunnel, updateManager,
+  getSecretSetting, setSecretSetting, getSetting, setSetting, cloudflareTunnels, legacyCloudflareTunnel, updateManager, verifyPassword,
   multipart, updateUpload, cleanupUploadedFiles
 };
 

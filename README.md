@@ -17,7 +17,7 @@ It supports:
 - Optional compatibility-oriented JavaScript obfuscation with explicit risk acknowledgement, bounded static analysis, preserved public names, and automatic fallback when a transform fails.
 - Managed Node.js applications launched as `node server.js` or another configured entry file.
 - Configurable install/build commands and static build-output publication for Vite, React, Astro, and similar projects.
-- Deployment presets for Static HTML, Vite/React, Astro, Next.js standalone, Node/Express, reverse proxy, and custom stacks.
+- Deployment presets for Static HTML, Vite/React, Astro, Hugo, Next.js standalone, Node/Express, reverse proxy, and custom stacks.
 - Automatic or manual `npm install --omit=dev`.
 - Per-site ports, bind addresses, custom headers, caching, SPA fallback, and domain-only access.
 - Per-site local firewall controls and optional Cloudflare WAF custom-rule synchronization.
@@ -126,7 +126,7 @@ A tunnel does not require inbound port forwarding. When Cloudflare Tunnel is the
 
 ### Atomic releases, Git, webhooks, and previews
 
-Git deployments clone into a new release directory, optionally run a bounded install command and build command, validate the configured entry/output, start the candidate, and then switch traffic. Previous releases remain available for one-click rollback. Each site workspace keeps deployment history with status, duration, commit SHA, author, message, logs access, redeploy, and rollback actions. Preview deployments receive a temporary hostname and expire automatically; they are intended for validation rather than permanent hosting.
+Git deployments clone into a new release directory, optionally run a bounded install command and build command, validate the configured entry/output, start the candidate, and then switch traffic. Previous releases remain available for one-click rollback. Each site workspace keeps deployment history with queued/building/running/failed/rolled-back/superseded state, duration, commit SHA, author, message, provider commit links, deployment-scoped logs, a clear active-release marker, redeploy, and rollback actions. Preview deployments receive a temporary hostname and expire automatically; they are intended for validation rather than permanent hosting.
 
 Administrators can connect GitHub or GitLab under **Settings → Instance**. Provider access tokens are encrypted at rest, are never returned to the browser, and are used to discover repositories and authenticate private HTTPS clones without embedding credentials in the stored Git URL or command line. Manual HTTPS/SSH repository URLs and deploy keys remain available. Set the externally reachable **Public SHAM URL** in the same panel and SHAM will create or repair the matching provider push webhook after successful Git deployments. The provider token must have the provider's repository/webhook permissions. If the dashboard has no public origin, leave that setting blank and configure the signed webhook manually.
 
@@ -134,11 +134,11 @@ A repository can trigger deployment through `POST /api/hooks/deploy/:id`. GitHub
 
 ### Environments and attached services
 
-Per-site environment variables support development, staging, and production scopes. Secret values are encrypted at rest and are never returned to the browser. The editor supports `.env` paste/import and server-side copying from another site/environment without revealing encrypted values to the client. Reusable database profiles attach an encrypted connection string to a selected environment variable without provisioning or managing the external database itself. Runtime configuration changes require a restart or a new release activation.
+Per-site environment variables support development, staging, and production scopes. Secret values are encrypted at rest and are masked by default. Administrators can reveal one saved secret after current-password confirmation, or replace it directly in the editor. The editor supports `.env` paste/import and server-side copying from another site/environment without revealing encrypted values to the client. Reusable database profiles attach an encrypted connection string to a selected environment variable without provisioning or managing the external database itself. Runtime configuration changes require a restart or a new release activation.
 
 ### Reverse-proxy sites
 
-Choose **Reverse proxy** when SHAM should manage a hostname, TLS, access policy, statistics, and observability for a service it does not launch itself. Upstream targets must be valid `http://` or `https://` URLs without embedded credentials; LAN IPs and hostnames are supported. SHAM applies the same request accounting, firewall, security headers, maintenance mode, domain routing, Cloudflare Tunnel, and WebSocket handling used by hosted sites, while enforcing bounded upstream request timeouts.
+Choose **Reverse proxy** when SHAM should manage a hostname, TLS, access policy, statistics, and observability for a service it does not launch itself. Upstream targets must be valid `http://` or `https://` URLs without embedded credentials; LAN IPs and hostnames are supported. SHAM applies the same request accounting, firewall, security headers, maintenance mode, domain routing, Cloudflare Tunnel, and WebSocket handling used by hosted sites, while enforcing configurable bounded upstream request timeouts. An optional per-site Host header override supports upstreams that require virtual-host routing.
 
 ### Scheduled jobs
 
@@ -699,6 +699,7 @@ Sites and files:
 | `DELETE` | `/api/sites/:id` | Delete a site and its files. |
 | `GET` | `/api/statistics` | Aggregate and per-site traffic statistics. |
 | `POST/DELETE` | `/api/sites/:id/firewall/ban-ip` | Add or remove an exact IP from a site's firewall block list. |
+| `PATCH` | `/api/sites/:id/pin` | Pin or unpin a site so favorites sort first. |
 | `GET` | `/api/performance` | Authenticated live performance history and alerts. |
 | `GET/POST` | `/api/sites/:id/snapshots` | List or create restore points. |
 | `POST` | `/api/sites/:id/snapshots/:snapshotId/restore` | Restore a snapshot with an automatic rollback point. |
@@ -709,13 +710,15 @@ Operations:
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/api/sites/:id/operations` | Read release, environment, job, preview, and attachment state. |
-| `GET` | `/api/sites/:id/deployments` | Read deployment history and retained rollback linkage. |
+| `GET` | `/api/sites/:id/deployments` | Read deployment history, provider links, active state, and retained rollback linkage. |
+| `GET` | `/api/sites/:id/deployments/:deploymentId/logs` | Read logs attached to one deployment. |
 | `POST` | `/api/sites/:id/deploy/git` | Build and activate an atomic Git release. |
 | `POST` | `/api/hooks/deploy/:id` | HMAC-authenticated repository webhook deployment. |
 | `POST` | `/api/sites/:id/releases/:releaseId/rollback` | Activate a retained release. |
 | `POST/DELETE` | `/api/sites/:id/previews` | Create or remove an expiring preview. |
 | `GET/PUT` | `/api/sites/:id/environment` | Read metadata or save encrypted environment variables. |
 | `POST` | `/api/sites/:id/environment/copy` | Copy environment variables server-side from another site/environment. |
+| `POST` | `/api/sites/:id/environment/:key/reveal` | Reveal one saved secret after administrator password confirmation. |
 | `GET/POST` | `/api/sites/:id/jobs` | Manage scheduled jobs. |
 | `POST` | `/api/admin/backups/run` | Run an external backup immediately. |
 | `GET` | `/api/runtime-logs/search` | Search bounded structured logs. |

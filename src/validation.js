@@ -241,6 +241,15 @@ function validateProxyTarget(value, runtimeType) {
   return target.href.slice(0, 2048);
 }
 
+function validateProxyHostHeader(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw.length > 253 || /[\r\n\0\s/]/.test(raw)) throw new Error('Proxy host-header override is invalid.');
+  const parsed = new URL(`http://${raw}`);
+  if (!parsed.hostname || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw new Error('Proxy host-header override must be a hostname with an optional port.');
+  return parsed.host;
+}
+
 function validateBuildCommand(value, label) {
   const command = String(value || '').trim();
   if (command.includes('\0') || /[\r\n]/.test(command) || command.length > 2000) throw new Error(`${label} must be a single command up to 2,000 characters.`);
@@ -316,6 +325,8 @@ function validateSiteInput(body, defaults = {}) {
     port,
     runtime_type: runtimeType,
     proxy_target: validateProxyTarget(body.proxyTarget ?? body.proxy_target ?? defaults.proxy_target ?? '', runtimeType),
+    proxy_host_header: validateProxyHostHeader(body.proxyHostHeader ?? body.proxy_host_header ?? defaults.proxy_host_header ?? ''),
+    proxy_timeout_ms: boundedInteger(body.proxyTimeoutMs ?? body.proxy_timeout_ms, 'Upstream timeout', Number(defaults.proxy_timeout_ms || 30000), 1000, 300000),
     install_command: validateBuildCommand(body.installCommand ?? body.install_command ?? defaults.install_command ?? '', 'Install command'),
     build_command: validateBuildCommand(body.buildCommand ?? body.build_command ?? defaults.build_command ?? '', 'Build command'),
     build_output_dir: validateBuildOutput(body.buildOutputDir ?? body.build_output_dir ?? defaults.build_output_dir ?? ''),
@@ -384,6 +395,7 @@ module.exports = {
   validateCacheRules,
   validateContainerImage,
   validateProxyTarget,
+  validateProxyHostHeader,
   validateBuildCommand,
   validateBuildOutput,
   validateSiteInput

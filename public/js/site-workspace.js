@@ -29,18 +29,28 @@ function renderWorkspaceSecurity(site) {
 function renderWorkspaceDeployments(deployments) {
   const site = currentWorkspaceSite();
   $('#workspace-deployment-list').innerHTML = deployments.length ? deployments.map((item) => {
-    const commit = item.commitSha ? `<code>${escapeHtml(String(item.commitSha).slice(0, 9))}</code> ` : '';
+    const commitLabel = item.commitSha ? `<code>${escapeHtml(String(item.commitSha).slice(0, 9))}</code>` : '';
+    const commit = item.commitUrl ? `<a href="${escapeHtml(item.commitUrl)}" target="_blank" rel="noopener" title="Open commit in provider">${commitLabel}</a> ` : commitLabel ? `${commitLabel} ` : '';
     const message = item.commitMessage || item.detail || item.ref || 'Deployment';
     const author = item.commitAuthor ? ` · ${escapeHtml(item.commitAuthor)}` : '';
     const duration = item.durationMs ? ` · ${(Number(item.durationMs) / 1000).toFixed(1)}s` : '';
-    const actions = state.user?.role === 'admin' ? `<div class="deployment-actions"><button class="button ghost compact-button" data-deployment-logs type="button">View logs</button>${site?.git_url ? '<button class="button ghost compact-button" data-deployment-redeploy type="button">Redeploy</button>' : ''}${item.releaseId ? `<button class="button ghost compact-button" data-deployment-rollback="${item.releaseId}" type="button">Roll back</button>` : ''}</div>` : '';
-    return `<article class="deployment-row" data-deployment-id="${item.id}" data-deployment-ref="${escapeHtml(item.ref || '')}"><span class="deployment-status ${escapeHtml(item.status)}" aria-label="${escapeHtml(item.status)}"></span><div class="deployment-main"><strong>${commit}${escapeHtml(message)}</strong><span class="muted">${escapeHtml(item.source || 'deployment')}${author}</span>${actions}</div><div class="deployment-meta">${escapeHtml(formatDate(item.finishedAt || item.startedAt))}${duration}</div></article>`;
+    const active = item.activeRelease || item.status === 'running' ? '<span class="badge success">Active</span>' : '';
+    const actions = state.user?.role === 'admin' ? `<div class="deployment-actions"><button class="button ghost compact-button" data-deployment-logs type="button">View logs${item.logCount ? ` (${item.logCount})` : ''}</button>${site?.git_url ? '<button class="button ghost compact-button" data-deployment-redeploy type="button">Redeploy</button>' : ''}${item.releaseId ? `<button class="button ghost compact-button" data-deployment-rollback="${item.releaseId}" type="button">Roll back</button>` : ''}</div>` : '';
+    return `<article class="deployment-row" data-deployment-id="${item.id}" data-deployment-ref="${escapeHtml(item.ref || '')}"><span class="deployment-status ${escapeHtml(item.status)}" aria-label="${escapeHtml(item.status)}"></span><div class="deployment-main"><strong>${commit}${escapeHtml(message)}</strong><span class="muted">${escapeHtml(item.source || 'deployment')}${author}</span>${actions}</div><div class="deployment-meta">${active}${escapeHtml(formatDate(item.finishedAt || item.startedAt))}${duration}</div></article>`;
   }).join('') : '<div class="empty-state compact"><p>No deployments have been recorded yet.</p></div>';
 }
 
 async function loadWorkspaceDeployments(site) {
   try { const data = await api(`/api/sites/${site.id}/deployments?limit=50`); renderWorkspaceDeployments(data.deployments || []); }
   catch (error) { $('#workspace-deployment-list').innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`; }
+}
+
+async function loadWorkspaceDeploymentLogs(site, deploymentId) {
+  $('#workspace-log-list').innerHTML = '<div class="empty-state compact"><p>Loading deployment logs…</p></div>';
+  try {
+    const data = await api(`/api/sites/${site.id}/deployments/${deploymentId}/logs?limit=1000`);
+    $('#workspace-log-list').innerHTML = data.logs?.length ? `<div class="notice">Showing logs attached to deployment #${deploymentId}. Use Refresh logs to return to the complete runtime log.</div>` + data.logs.map((row) => `<div class="event-item ${escapeHtml(row.level || '')}"><span class="event-icon">${row.level === 'error' ? '!' : '·'}</span><div><strong>${escapeHtml(row.message)}</strong><p>${escapeHtml(formatDate(row.createdAt))}</p></div></div>`).join('') : '<div class="empty-state compact"><p>No logs were attached to this deployment.</p></div>';
+  } catch (error) { $('#workspace-log-list').innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`; }
 }
 
 async function loadWorkspaceLogs(site) {
@@ -51,14 +61,14 @@ async function loadWorkspaceLogs(site) {
   } catch (error) { $('#workspace-log-list').innerHTML = `<p class="form-error">${escapeHtml(error.message)}</p>`; }
 }
 
-function selectWorkspaceTab(tab) {
+function selectWorkspaceTab(tab, { load = true } = {}) {
   const site = currentWorkspaceSite();
   if (!site) return;
   state.siteWorkspaceTab = tab;
   $$('[data-site-workspace-tab]').forEach((button) => button.classList.toggle('active', button.dataset.siteWorkspaceTab === tab));
   $$('.workspace-panel').forEach((panel) => { panel.hidden = panel.id !== `site-workspace-${tab}`; });
-  if (tab === 'deployments') loadWorkspaceDeployments(site);
-  if (tab === 'logs') loadWorkspaceLogs(site);
+  if (load && tab === 'deployments') loadWorkspaceDeployments(site);
+  if (load && tab === 'logs') loadWorkspaceLogs(site);
   if (tab === 'networking') renderWorkspaceNetworking(site);
   if (tab === 'security') renderWorkspaceSecurity(site);
 }
@@ -108,7 +118,10 @@ $('#workspace-deployment-list').addEventListener('click', async (event) => {
   if (!site) return;
   const row = event.target.closest('[data-deployment-id]');
   if (!row) return;
-  if (event.target.closest('[data-deployment-logs]')) return selectWorkspaceTab('logs');
+  if (event.target.closest('[data-deployment-logs]')) {
+    selectWorkspaceTab('logs', { load: false });
+    return loadWorkspaceDeploymentLogs(site, Number(row.dataset.deploymentId));
+  }
   const redeploy = event.target.closest('[data-deployment-redeploy]');
   if (redeploy) {
     setBusy(redeploy, true, 'Deploying…');
@@ -134,6 +147,11 @@ $('#workspace-deployment-list').addEventListener('click', async (event) => {
 
 async function handleSiteAction(site, action, button) {
   if (action === 'workspace') return openSiteWorkspace(site);
+  if (action === 'pin') {
+    try { await api(`/api/sites/${site.id}/pin`, { method: 'PATCH', body: { pinned: !site.pinned } }); await loadSites(); }
+    catch (error) { toast(error.message, 'error'); }
+    return;
+  }
   if (action === 'edit') return openEditSite(site);
   if (action === 'content') return openContent(site);
   if (action === 'files') return openFiles(site);

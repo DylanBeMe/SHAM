@@ -6,7 +6,7 @@ function registerOperationsRoutes(ctx) {
   const {
     app, requireAuth, requireAdmin, webhookLimiter, serializeSiteMutation, db, crypto, DEPLOY_WEBHOOK_DUMMY_SECRET,
     operationsManager, manager, recordAudit, getSiteOr404, bool, validateSiteInput, uniqueSlug, writeSiteConfig,
-    getSecretSetting, setSecretSetting, getSetting, setSetting, cloudflareTunnels, legacyCloudflareTunnel, updateManager,
+    getSecretSetting, setSecretSetting, getSetting, setSetting, cloudflareTunnels, legacyCloudflareTunnel, updateManager, verifyPassword,
     multipart, updateUpload, cleanupUploadedFiles
   } = ctx;
 
@@ -62,6 +62,17 @@ function authenticateDeployWebhook(req, res, next) {
     res.json({ deployments: operationsManager.listDeployments(site.id, req.query.limit) });
   });
 
+
+  app.get('/api/sites/:id/deployments/:deploymentId/logs', requireAuth, (req, res) => {
+    const site = getSiteOr404(req, res);
+    if (!site) return;
+    const deploymentId = Number(req.params.deploymentId);
+    if (!Number.isInteger(deploymentId) || deploymentId <= 0) return res.status(400).json({ error: 'Deployment ID is invalid.' });
+    const exists = db.prepare('SELECT id FROM site_deployments WHERE id = ? AND site_id = ?').get(deploymentId, site.id);
+    if (!exists) return res.status(404).json({ error: 'Deployment not found.' });
+    res.json({ logs: operationsManager.deploymentLogs(site.id, deploymentId, req.query.limit) });
+  });
+
   app.get('/api/sites/:id/operations', requireAuth, requireAdmin, (req, res) => {
     const site = getSiteOr404(req, res);
     if (!site) return;
@@ -76,6 +87,20 @@ function authenticateDeployWebhook(req, res, next) {
       if (manager.statusFor(site.id).running) await manager.restart(site.id);
       recordAudit(req.user.id, 'site.environment.update', { id: site.id, keys: environment.map((item) => item.key) });
       res.json({ environment });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+
+
+  app.post('/api/sites/:id/environment/:key/reveal', requireAuth, requireAdmin, async (req, res) => {
+    const site = getSiteOr404(req, res);
+    if (!site) return;
+    try {
+      const user = db.prepare('SELECT password_hash, password_salt FROM users WHERE id = ? AND active = 1').get(req.user.id);
+      if (!user || !(await verifyPassword(String(req.body?.password || ''), user.password_salt, user.password_hash))) return res.status(401).json({ error: 'Password confirmation failed.' });
+      const revealed = operationsManager.revealEnvironmentSecret(site.id, req.params.key);
+      recordAudit(req.user.id, 'site.environment.secret-reveal', { id: site.id, key: revealed.key });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(revealed);
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
@@ -150,7 +175,7 @@ function authenticateDeployWebhook(req, res, next) {
   app.post('/api/sites/:id/releases/:releaseId/rollback', requireAuth, requireAdmin, async (req, res) => {
     const site = getSiteOr404(req, res);
     if (!site) return;
-    try { const releases = await operationsManager.rollbackRelease(site, Number(req.params.releaseId)); operationsManager.recordDeployment(site.id, { source: 'rollback', status: 'success', ref: String(req.params.releaseId), detail: 'Release rollback activated.' }); recordAudit(req.user.id, 'site.release.rollback', { siteId: site.id, releaseId: Number(req.params.releaseId) }); res.json({ releases }); }
+    try { const releases = await operationsManager.rollbackRelease(site, Number(req.params.releaseId)); recordAudit(req.user.id, 'site.release.rollback', { siteId: site.id, releaseId: Number(req.params.releaseId) }); res.json({ releases, deployments: operationsManager.listDeployments(site.id, 50) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
 

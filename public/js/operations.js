@@ -37,9 +37,28 @@ function addEnvironmentRow(variable = {}) {
     <label><span>Value</span><input data-env-value type="${variable.secret ? 'password' : 'text'}" value="${escapeHtml(variable.value || '')}" placeholder="${variable.secret ? 'Leave blank to preserve' : 'Value'}"></label>
     <label><span>Scope</span><select data-env-scope><option value="runtime">Runtime</option><option value="build">Build</option><option value="both">Build + runtime</option></select></label>
     <label class="checkbox-line compact-check"><input data-env-secret type="checkbox" ${variable.secret ? 'checked' : ''}><span>Secret</span></label>
+    ${variable.secret && variable.key ? '<button class="button ghost compact-button" data-env-reveal type="button">Reveal</button>' : ''}
     <button class="icon-button danger-text" data-remove-config-row type="button" aria-label="Remove environment variable">×</button>`;
   $('[data-env-scope]', row).value = variable.scope || 'runtime';
   $('[data-env-secret]', row).addEventListener('change', (event) => { $('[data-env-value]', row).type = event.target.checked ? 'password' : 'text'; });
+  $('[data-env-reveal]', row)?.addEventListener('click', async (event) => {
+    const site = operationsSite();
+    const key = $('[data-env-key]', row).value.trim();
+    if (!site || !key) return;
+    const password = await requestAction({ title: `Reveal ${key}?`, message: 'Confirm your current password. The secret will be returned once and placed in this form field; anyone who can see your screen may read it.', confirmLabel: 'Reveal secret', inputLabel: 'Password', inputType: 'password', autocomplete: 'current-password' });
+    if (!password) return;
+    setBusy(event.currentTarget, true, 'Revealing…');
+    try {
+      const result = await api(`/api/sites/${site.id}/environment/${encodeURIComponent(key)}/reveal`, { method: 'POST', body: { password } });
+      const input = $('[data-env-value]', row);
+      input.value = result.value || '';
+      input.type = 'text';
+      input.focus();
+      input.select();
+      toast(`${key} revealed in the editor. Saving without changes preserves the same secret.`,'warning');
+    } catch (error) { toast(error.message, 'error'); }
+    finally { setBusy(event.currentTarget, false); }
+  });
   $('[data-remove-config-row]', row).addEventListener('click', () => row.remove());
   $('#environment-rows').append(row);
 }

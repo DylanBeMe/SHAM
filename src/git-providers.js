@@ -113,6 +113,16 @@ function repositoryPath(repositoryUrl, provider) {
   return pathname;
 }
 
+function providerCommitUrl(repositoryUrl, commitSha) {
+  const provider = providerForRepositoryUrl(repositoryUrl);
+  const sha = String(commitSha || '').trim();
+  if (!provider || !/^[0-9a-f]{7,64}$/i.test(sha)) return '';
+  const pathname = repositoryPath(repositoryUrl, provider).split('/').map(encodeURIComponent).join('/');
+  return provider === 'github'
+    ? `https://github.com/${pathname}/commit/${encodeURIComponent(sha)}`
+    : `https://gitlab.com/${pathname}/-/commit/${encodeURIComponent(sha)}`;
+}
+
 function normalizeWebhookBaseUrl(value) {
   const input = String(value || '').trim();
   if (!input) return '';
@@ -195,6 +205,7 @@ module.exports = {
   saveProviderToken,
   listProviderRepositories,
   providerForRepositoryUrl,
+  providerCommitUrl,
   applyGitProviderCredentials,
   normalizeWebhookBaseUrl,
   ensureProviderWebhook

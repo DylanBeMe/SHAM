@@ -21,26 +21,26 @@ These features reinforce each other and would make deploying, operating, and tro
 - [x] Let users select a repository and branch when creating a site.
 - [x] Add automatic deploy-on-push without requiring manual webhook setup when a public SHAM URL is configured.
 - [x] Show the deployed commit SHA, author, commit message, and deployment duration.
-- [ ] Link deployments back to the corresponding commit or diff in the Git provider.
+- [x] Link deployments back to the corresponding commit or diff in the Git provider.
 - [x] Add a **Redeploy this commit** action.
 - [x] Surface provider connection and webhook errors clearly in the UI.
 
 ## 2. First-class deployment history
 
 - [x] Add a deployment timeline for each site.
-- [ ] Track deployment states such as queued, building, running, failed, rolled back, and superseded.
-- [ ] Attach build and runtime logs to each deployment.
+- [x] Track deployment states such as queued, building, running, failed, rolled back, and superseded.
+- [x] Attach build and runtime logs to each deployment.
 - [x] Show commit metadata alongside each deployment when Git integration is configured.
 - [x] Add one-click redeploy for a previous release.
 - [x] Add one-click rollback to a previous successful release.
 - [x] Show deployment duration and failure reason at a glance.
-- [ ] Make the currently active release easy to identify.
+- [x] Make the currently active release easy to identify.
 
 ## 3. Environment variables and secrets UX
 
 - [x] Replace basic environment editing with a table-style variable editor.
 - [x] Mask secret values by default.
-- [ ] Allow users to reveal or replace individual secrets with appropriate permissions.
+- [x] Allow users to reveal or replace individual secrets with appropriate permissions.
 - [x] Support bulk paste/import from `.env` format.
 - [x] Add copy actions for moving variables between sites/environments without exposing secret values to the browser.
 - [x] Show which variable names changed without exposing their values.
@@ -85,10 +85,10 @@ Build on the per-site Cloudflare Tunnel support so SHAM can configure the Cloudf
 - [ ] Notify when a backup fails.
 - [ ] Notify when a Cloudflare Tunnel disconnects or becomes unhealthy.
 - [ ] Notify when dependency or security scanning finds a significant issue.
-- [ ] Add Discord notifications.
-- [ ] Add Slack notifications.
-- [ ] Add generic webhook notifications.
-- [ ] Add email notifications.
+- [x] Add Discord notifications.
+- [x] Add Slack notifications.
+- [x] Add generic webhook notifications.
+- [x] Add email notifications.
 - [ ] Support per-site notification preferences and severity thresholds.
 
 ## 7. OIDC / SSO
@@ -112,7 +112,7 @@ Add presets to make common deployments faster and reduce configuration mistakes.
 - [x] Add a Next.js standalone template.
 - [x] Add an Astro template.
 - [x] Add a Vite / React template.
-- [ ] Add a Hugo template.
+- [x] Add a Hugo template.
 - [x] Add a Reverse Proxy template.
 - [x] Preconfigure sensible install/build commands and output paths per template.
 - [x] Allow templates to be customized before the site is created.
@@ -135,8 +135,8 @@ app.example.com -> http://192.168.1.50:3000
 - [x] Allow SHAM-managed TLS and domains in front of reverse-proxy sites.
 - [x] Allow Cloudflare Tunnel routing in front of reverse-proxy sites.
 - [x] Reuse existing headers, security policy, metrics, and access-control features where possible.
-- [ ] Support optional host-header overrides.
-- [ ] Support configurable upstream timeouts.
+- [x] Support optional host-header overrides.
+- [x] Support configurable upstream timeouts.
 - [x] Add clear errors for invalid upstreams and runtime health failures for unreachable upstreams.
 - [x] Add maintenance-mode support for proxied services.
 
@@ -147,7 +147,7 @@ app.example.com -> http://192.168.1.50:3000
 - [x] Add global search for sites and domains through the command palette.
 - [x] Add a `Ctrl/Cmd + K` command palette.
 - [x] Add quick actions for deploy, restart, logs, configuration, and files.
-- [ ] Allow sites to be pinned or favorited.
+- [x] Allow sites to be pinned or favorited.
 - [x] Improve empty states and onboarding guidance.
 - [x] Add a recent activity feed to the dashboard.
 - [x] Improve responsive/mobile layouts.

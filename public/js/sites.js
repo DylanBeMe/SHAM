@@ -31,7 +31,7 @@ function renderSites() {
     const protocol = site.runtime.protocol || (site.ssl_enabled ? 'https' : 'http');
     const displayUrl = siteDisplayUrl(site);
     return `<article class="site-card" data-site-id="${site.id}">
-      <div class="site-card-head"><div class="site-title"><button class="site-title-button" data-action="workspace" type="button"><h2>${escapeHtml(site.name)}</h2></button><a href="${escapeHtml(displayUrl)}" target="_blank" rel="noopener">${escapeHtml(displayUrl)}</a></div><span class="status-pill ${statusClass}">${statusText}</span></div>
+      <div class="site-card-head"><div class="site-title"><div class="site-title-line"><button class="site-title-button" data-action="workspace" type="button"><h2>${escapeHtml(site.name)}</h2></button><button class="pin-button ${site.pinned ? 'active' : ''}" data-action="pin" type="button" aria-label="${site.pinned ? 'Unpin' : 'Pin'} ${escapeHtml(site.name)}" title="${site.pinned ? 'Unpin site' : 'Pin site'}">★</button></div><a href="${escapeHtml(displayUrl)}" target="_blank" rel="noopener">${escapeHtml(displayUrl)}</a></div><span class="status-pill ${statusClass}">${statusText}</span></div>
       <div class="site-meta">
         <div class="meta-cell"><span>Runtime</span><strong>${site.runtime_type === 'node' ? 'Node.js' : site.runtime_type === 'proxy' ? 'Reverse proxy' : 'Static'}${site.minify ? ' · Minified' : ''}${site.obfuscate ? ' · Obfuscated' : ''}</strong></div>
         <div class="meta-cell"><span>Listener</span><strong>${escapeHtml(site.bind_host)}:${site.port}</strong></div>
@@ -123,6 +123,7 @@ function updateRuntimeFields() {
   const proxy = runtime === 'proxy';
   $('#static-fields').hidden = node || proxy;
   $('#node-fields').hidden = !node;
+  $('#proxy-fields').hidden = !proxy;
   $('#build-fields').hidden = proxy || (!$('#site-id').value && ($('#site-source').value || 'upload') !== 'git');
   $('#site-entry').required = runtime === 'static';
   $('#site-node-entry').required = node;
@@ -319,6 +320,7 @@ function applySiteTemplate(template) {
     astro: { source: 'git', runtime: 'static', entry: 'index.html', install: 'npm ci', build: 'npm run build', output: 'dist' },
     next: { source: 'git', runtime: 'node', nodeEntry: '.next/standalone/server.js', install: 'npm ci', build: 'npm run build', output: '' },
     node: { source: 'git', runtime: 'node', nodeEntry: 'server.js', install: 'npm ci', build: '', output: '' },
+    hugo: { source: 'git', runtime: 'static', entry: 'index.html', install: '', build: 'hugo --minify', output: 'public' },
     proxy: { source: 'proxy', runtime: 'proxy', install: '', build: '', output: '' }
   };
   const preset = presets[template];
@@ -390,6 +392,8 @@ function openNewSite() {
   $('#site-entry').value = 'index.html';
   $('#site-node-entry').value = 'server.js';
   $('#site-proxy-target').value = '';
+  $('#site-proxy-host-header').value = '';
+  $('#site-proxy-timeout').value = '30000';
   $('#site-create-git-provider').value = '';
   $('#site-create-git-repository-row').hidden = true;
   $('#site-create-git-repository').innerHTML = '<option value="">Choose a repository…</option>';
@@ -498,6 +502,8 @@ function openEditSite(site) {
   $('#site-entry').value = site.entry_file;
   $('#site-node-entry').value = site.node_entry;
   $('#site-proxy-target').value = site.proxy_target || '';
+  $('#site-proxy-host-header').value = site.proxy_host_header || '';
+  $('#site-proxy-timeout').value = site.proxy_timeout_ms || 30000;
   $('#site-install-command').value = site.install_command || '';
   $('#site-build-command').value = site.build_command || '';
   $('#site-build-output').value = site.build_output_dir || '';
@@ -574,6 +580,8 @@ function appendConfiguration(formData) {
   formData.append('runtimeType', $('#site-runtime').value);
   formData.append('source', $('#site-source').value || 'upload');
   formData.append('proxyTarget', $('#site-proxy-target').value);
+  formData.append('proxyHostHeader', $('#site-proxy-host-header').value);
+  formData.append('proxyTimeoutMs', $('#site-proxy-timeout').value || '30000');
   formData.append('installCommand', $('#site-install-command').value);
   formData.append('buildCommand', $('#site-build-command').value);
   formData.append('buildOutputDir', $('#site-build-output').value);
@@ -655,6 +663,8 @@ $('#site-form').addEventListener('submit', async (event) => {
           name: $('#site-name').value,
           runtimeType: $('#site-runtime').value,
           proxyTarget: $('#site-proxy-target').value,
+          proxyHostHeader: $('#site-proxy-host-header').value,
+          proxyTimeoutMs: $('#site-proxy-timeout').value || '30000',
           installCommand: $('#site-install-command').value,
           buildCommand: $('#site-build-command').value,
           buildOutputDir: $('#site-build-output').value,

@@ -13,6 +13,16 @@ function registerSiteRoutes(ctx) {
 
 app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().map((site) => ({ ...site, cloudflareTunnel: cloudflareTunnels.summary(site.id) })) }));
 
+
+  app.patch('/api/sites/:id/pin', requireAuth, (req, res) => {
+    const site = getSiteOr404(req, res);
+    if (!site) return;
+    const pinned = bool(req.body?.pinned, !site.pinned);
+    db.prepare('UPDATE sites SET pinned = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(pinned ? 1 : 0, site.id);
+    recordAudit(req.user.id, pinned ? 'site.pin' : 'site.unpin', { siteId: site.id });
+    res.json({ site: manager.decorate(manager.getSite(site.id)) });
+  });
+
   app.post('/api/sites/:id/firewall/ban-ip', requireAuth, (req, res) => {
     const site = getSiteOr404(req, res);
     if (!site) return;
@@ -157,7 +167,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
 
       const result = db.prepare(`
         INSERT INTO sites (
-          name, slug, directory_name, bind_host, port, runtime_type, proxy_target,
+          name, slug, directory_name, bind_host, port, runtime_type, proxy_target, proxy_host_header, proxy_timeout_ms,
           install_command, build_command, build_output_dir, entry_file, node_entry,
           install_dependencies, minify, obfuscate, obfuscation_risk_acknowledged,
           domain_only, spa_fallback, cache_seconds, headers_json, enabled, domain,
@@ -169,7 +179,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
           maintenance_html, redirects_json, error_pages_json, cache_rules_json,
           release_mode, git_url, git_branch, preview_domain, created_by
         ) VALUES (
-          @name, @slug, @directoryName, @bindHost, @port, @runtimeType, @proxyTarget,
+          @name, @slug, @directoryName, @bindHost, @port, @runtimeType, @proxyTarget, @proxyHostHeader, @proxyTimeoutMs,
           @installCommand, @buildCommand, @buildOutputDir, @entryFile, @nodeEntry,
           @installDependencies, @minify, @obfuscate, @obfuscationRiskAcknowledged,
           @domainOnly, @spaFallback, @cacheSeconds, @headersJson, 0, @domain,
@@ -189,6 +199,8 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
         port: config.port,
         runtimeType: config.runtime_type,
         proxyTarget: config.proxy_target,
+        proxyHostHeader: config.proxy_host_header,
+        proxyTimeoutMs: config.proxy_timeout_ms,
         installCommand: config.install_command,
         buildCommand: config.build_command,
         buildOutputDir: config.build_output_dir,
@@ -253,7 +265,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       } else {
         const deploymentId = operationsManager.recordDeployment(id, {
           source: source === 'proxy' ? 'proxy-config' : 'upload',
-          status: 'success',
+          status: 'running',
           detail: source === 'proxy' ? `Proxy target configured: ${config.proxy_target}` : 'Initial project upload installed.'
         });
         deployment = operationsManager.listDeployments(id).find((item) => item.id === deploymentId) || null;
@@ -466,7 +478,7 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
         warning = [warning, compatibilityWarning].filter(Boolean).join(' ');
       }
       recordAudit(req.user.id, 'site.content.replace', { id: site.id });
-      operationsManager.recordDeployment(site.id, { source: 'upload', status: warning ? 'deployed-with-warning' : 'success', detail: warning || 'Project files replaced.' });
+      operationsManager.recordDeployment(site.id, { source: 'upload', status: warning ? 'deployed-with-warning' : 'running', detail: warning || 'Project files replaced.' });
       res.json({ site: manager.decorate(manager.getSite(site.id)), warning, rollbackSnapshot });
     } catch (error) {
       if (wasRunning && !manager.statusFor(site.id).running) {
