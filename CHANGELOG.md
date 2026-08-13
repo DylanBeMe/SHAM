@@ -14,6 +14,9 @@ All notable public changes to SHAM are documented here. The project follows Sema
 - Automated Cloudflare DNS/firewall reconciliation for opted-in sites.
 - Staged full-instance backup restore with archive validation, SQLite validation, atomic data-directory swap, preserved backup/update stores, and rollback on failed restore.
 - Supervised remotely managed Cloudflare Tunnel support with encrypted token storage, administrator controls, bounded restart backoff, and Docker packaging.
+- First-class Docker image source deployments plus broader Git provider connections for Bitbucket Cloud, Gitea, and Forgejo alongside GitHub and GitLab.
+- Dashboard attention-card drilldowns, a primary Performance navigation item, deeper command-palette search, and a sandboxed plugin-development playground.
+- Categorized operator/developer documentation covering runtimes, Docker/Compose, Git/CI/CD, API/CLI, operations/security, plugins, and troubleshooting.
 
 ### Changed
 
@@ -21,6 +24,12 @@ All notable public changes to SHAM are documented here. The project follows Sema
 - Managed container secrets are passed through the Docker client environment instead of embedding secret values in command-line arguments.
 - Git releases now start from stable retained release paths so running process/container working directories are never renamed during activation or rollback.
 - Health checks use bounded concurrency and runtime logging preserves lines split across stream chunks.
+- Runtime promotion, Docker/Compose startup, scheduled container jobs, and backup restore now clean up/roll back partial failures more defensively.
+- Compose validation blocks unmanaged external resources, host bind mounts/namespace escapes, auxiliary host ports, and unsafe Dockerfile paths while preserving private service networking.
+- Folder uploads have bounded multipart-field headroom for the expanded site wizard instead of failing with `Too many fields`.
+- Dashboard themes, administration settings, environment/Git-provider layouts, logout/license controls, tooltips, and toast stacking were aligned for consistent responsive behavior.
+- The CLI now has explicit idempotent start/stop API endpoints and operation-appropriate request timeouts.
+- Tests provide an explicit JWT secret so release checks cannot generate `data/.jwt-secret` in the source tree.
 
 ## [1.0.0] — 2026-08-05
 

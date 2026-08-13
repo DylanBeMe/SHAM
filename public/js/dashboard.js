@@ -245,6 +245,62 @@ function renderAttention(attention, clientTypes) {
   $('#client-intelligence').innerHTML = clientTypes.filter((row) => Number(row.requests || 0) > 0).map((row) => `<span class="client-badge ${escapeHtml(row.type)}">${escapeHtml(clientTypeLabel(row.type))} · ${formatNumber(row.requests)}</span>`).join('');
 }
 
+
+function openAttentionDetail(kind) {
+  const details = state.statistics?.attentionDetails || {};
+  const dialog = $('#attention-dialog');
+  const title = $('#attention-detail-title');
+  const summary = $('#attention-detail-summary');
+  const list = $('#attention-detail-list');
+  const openButton = $('#attention-detail-open');
+  const rows = ({
+    health: details.unhealthySites || [],
+    deployments: details.failedDeployments || [],
+    alerts: details.activeAlerts || [],
+    automation: details.automatedTraffic || []
+  })[kind] || [];
+  const configs = {
+    health: ['Site health', rows.length ? `${rows.length} enabled site${rows.length === 1 ? '' : 's'} require attention.` : 'Every enabled site is currently healthy.', 'Sites', 'sites'],
+    deployments: ['Failed deployments', rows.length ? `${rows.length} deployment${rows.length === 1 ? '' : 's'} failed during the last seven days.` : 'No failed deployments were recorded during the last seven days.', 'Sites', 'sites'],
+    alerts: ['Active alerts', rows.length ? `${rows.length} performance or runtime alert${rows.length === 1 ? '' : 's'} are active.` : 'No performance or runtime alerts are active.', 'Performance', 'performance'],
+    automation: ['Automated traffic', rows.length ? 'Requests identified as crawler, scraper, search, or LLM traffic.' : 'No automated client traffic has been recorded.', 'Observability', 'activity']
+  };
+  const [heading, description, buttonLabel, target] = configs[kind] || ['Details', '', '', 'overview'];
+  title.textContent = heading;
+  summary.textContent = description;
+  $('#attention-detail-kicker').textContent = 'Dashboard quick view';
+  openButton.hidden = !target;
+  openButton.textContent = `Open ${buttonLabel}`;
+  openButton.dataset.targetSection = target;
+  if (!rows.length) {
+    list.innerHTML = '<div class="empty-state compact"><p>Nothing requires action here.</p></div>';
+  } else if (kind === 'health') {
+    list.innerHTML = rows.map((row) => `<button class="attention-detail-row" data-attention-site="${Number(row.id)}" type="button"><span><strong>${escapeHtml(row.name)}</strong><small>${escapeHtml(row.runtimeType || 'runtime')}</small></span><span class="badge warning">${escapeHtml(row.healthStatus || (row.running ? 'starting' : 'stopped'))}</span></button>`).join('');
+  } else if (kind === 'deployments') {
+    list.innerHTML = rows.map((row) => `<button class="attention-detail-row" data-attention-site="${Number(row.siteId)}" data-attention-site-tab="deployments" type="button"><span><strong>${escapeHtml(row.siteName)}</strong><small>${escapeHtml(row.detail || row.source || 'Deployment failed')}</small></span><span><span class="badge error">Failed</span><small>${escapeHtml(formatDate(row.startedAt))}</small></span></button>`).join('');
+  } else if (kind === 'alerts') {
+    list.innerHTML = rows.map((row) => `<div class="attention-detail-row noninteractive"><span><strong>${escapeHtml(row.siteName || row.title || row.kind || 'Performance alert')}</strong><small>${escapeHtml(row.message || row.detail || row.kind || 'Threshold exceeded')}</small></span><span><span class="badge ${row.severity === 'critical' ? 'error' : 'warning'}">${escapeHtml(row.severity || 'warning')}</span><small>${escapeHtml(formatDate(row.createdAt || row.created_at || row.triggeredAt))}</small></span></div>`).join('');
+  } else {
+    list.innerHTML = rows.map((row) => `<div class="attention-detail-row noninteractive"><span><strong>${escapeHtml(clientTypeLabel(row.type))}</strong><small>${formatNumber(row.visitors || 0)} unique IP${Number(row.visitors) === 1 ? '' : 's'}</small></span><strong>${formatNumber(row.requests || 0)} requests</strong></div>`).join('');
+  }
+  showModal(dialog);
+}
+
+$$('[data-attention-view]').forEach((button) => button.addEventListener('click', () => openAttentionDetail(button.dataset.attentionView)));
+$('#attention-detail-open').addEventListener('click', () => {
+  const section = $('#attention-detail-open').dataset.targetSection;
+  closeModal($('#attention-dialog'));
+  if (section) showSection(section);
+});
+$('#attention-detail-list').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-attention-site]');
+  if (!button) return;
+  const site = state.sites.find((item) => item.id === Number(button.dataset.attentionSite));
+  if (!site) return;
+  closeModal($('#attention-dialog'));
+  openSiteWorkspace(site, button.dataset.attentionSiteTab || 'overview');
+});
+
 function renderVisitors(visitors) {
   const target = $('#visitor-table');
   if (!visitors.length) {

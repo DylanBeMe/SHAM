@@ -208,13 +208,21 @@ function renderOperationsInstance(payload) {
     }).join('')
     : '<div class="empty-connector"><strong>No connectors configured</strong><span>Edit a site to configure its Cloudflare Tunnel.</span></div>';
   const gitProviders = new Map((payload.gitProviders || []).map((item) => [item.provider, item]));
-  for (const provider of ['github', 'gitlab']) {
-    const configured = Boolean(gitProviders.get(provider)?.configured);
+  for (const row of $$('[data-git-provider-row]')) {
+    const provider = row.dataset.gitProviderRow;
+    const info = gitProviders.get(provider) || {};
+    const configured = Boolean(info.configured);
     const status = $(`#git-provider-${provider}-status`);
     const token = $(`#git-provider-${provider}-token`);
-    const clear = $(`[data-git-provider-clear="${provider}"]`);
-    if (status) status.textContent = configured ? 'Connected · encrypted token saved' : 'Not connected';
+    const base = $(`[data-git-provider-base="${provider}"]`, row);
+    const clear = $(`[data-git-provider-clear="${provider}"]`, row);
+    if (status) {
+      const location = info.configurableBaseUrl && info.baseUrl ? ` · ${info.baseUrl}` : '';
+      status.textContent = `${configured ? 'Connected · encrypted token saved' : 'Not connected'}${location}${info.insecureBaseUrl ? ' · HTTP warning' : ''}`;
+      status.classList.toggle('warning-text', Boolean(info.insecureBaseUrl));
+    }
     if (token) token.value = '';
+    if (base && info.baseUrl) base.value = info.baseUrl;
     if (clear) clear.disabled = !configured;
   }
   $('#git-webhook-base-url').value = settings.gitWebhookBaseUrl || '';
@@ -324,16 +332,26 @@ async function loadOperations() {
 
 $('#operations-site').addEventListener('change', () => { state.operationsSiteId = Number($('#operations-site').value || 0) || null; loadOperations(); });
 $('#refresh-operations').addEventListener('click', loadOperations);
+function gitProviderLabel(provider) {
+  return ({ github: 'GitHub', gitlab: 'GitLab', bitbucket: 'Bitbucket Cloud', gitea: 'Gitea', forgejo: 'Forgejo' })[provider] || provider;
+}
+
 $$('[data-git-provider-save]').forEach((button) => button.addEventListener('click', async (event) => {
   const provider = event.currentTarget.dataset.gitProviderSave;
+  const row = event.currentTarget.closest('[data-git-provider-row]');
   const input = $(`#git-provider-${provider}-token`);
-  const token = input.value.trim();
-  if (!token) return toast(`Enter a ${provider === 'github' ? 'GitHub' : 'GitLab'} access token.`, 'error');
-  setBusy(event.currentTarget, true, 'Connecting…');
+  const base = $(`[data-git-provider-base="${provider}"]`, row);
+  const token = input?.value.trim() || '';
+  if (!token && !base) return toast(`Enter a ${gitProviderLabel(provider)} access token.`, 'error');
+  if (base && !base.value.trim()) return toast(`Enter the ${gitProviderLabel(provider)} server URL.`, 'error');
+  setBusy(event.currentTarget, true, token ? 'Connecting…' : 'Saving…');
   try {
-    await api(`/api/admin/git-providers/${encodeURIComponent(provider)}`, { method: 'PUT', body: { token } });
-    input.value = '';
-    toast(`${provider === 'github' ? 'GitHub' : 'GitLab'} connected.`);
+    await api(`/api/admin/git-providers/${encodeURIComponent(provider)}`, {
+      method: 'PUT',
+      body: { ...(token ? { token } : {}), ...(base ? { baseUrl: base.value.trim() } : {}) }
+    });
+    if (input) input.value = '';
+    toast(token ? `${gitProviderLabel(provider)} connected.` : `${gitProviderLabel(provider)} server saved.`);
     await loadOperations();
   } catch (error) { toast(error.message, 'error'); }
   finally { setBusy(event.currentTarget, false); }
@@ -343,7 +361,7 @@ $$('[data-git-provider-clear]').forEach((button) => button.addEventListener('cli
   setBusy(event.currentTarget, true, 'Disconnecting…');
   try {
     await api(`/api/admin/git-providers/${encodeURIComponent(provider)}`, { method: 'PUT', body: { clearToken: true } });
-    toast(`${provider === 'github' ? 'GitHub' : 'GitLab'} disconnected.`);
+    toast(`${gitProviderLabel(provider)} disconnected.`);
     await loadOperations();
   } catch (error) { toast(error.message, 'error'); }
   finally { setBusy(event.currentTarget, false); }

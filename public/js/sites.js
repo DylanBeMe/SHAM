@@ -117,42 +117,92 @@ function nextPort() {
   return port;
 }
 
+function selectedRuntimePreset() {
+  const runtime = $('#site-runtime').value;
+  if (runtime === 'static' || runtime === 'proxy' || runtime === 'node' || runtime === 'compose') return runtime;
+  if (runtime === 'container') return $('#site-container-mode').value || 'image';
+  return $('#site-runtime-preset').value || 'custom';
+}
+
+function selectedStartCommand() {
+  const runtime = $('#site-runtime').value;
+  const editable = runtime === 'process' || (runtime === 'container' && $('#site-container-mode').value === 'image');
+  return editable ? $('#site-start-command').value : '';
+}
+
+function updateProbeFields() {
+  const runtime = $('#site-runtime').value;
+  const managedRuntime = ['node', 'process', 'container', 'compose'].includes(runtime);
+  const healthType = $('#site-health-type').value;
+  $('#site-health-path').closest('label').hidden = healthType !== 'http';
+  $('#site-health-command').closest('label').hidden = healthType !== 'command';
+  $('#site-health-status-min').closest('label').hidden = healthType !== 'http';
+  const readinessType = $('#site-readiness-type').value;
+  $('#site-readiness-type').closest('label').hidden = !managedRuntime;
+  $('#site-readiness-path').closest('label').hidden = !managedRuntime || readinessType !== 'http';
+  $('#site-readiness-command').closest('label').hidden = !managedRuntime || readinessType !== 'command';
+  $('#site-readiness-status-min').closest('label').hidden = !managedRuntime || readinessType !== 'http';
+  $('#site-startup-timeout').closest('label').hidden = !managedRuntime;
+  $('#site-readiness-command').required = managedRuntime && readinessType === 'command';
+  $('#site-health-command').required = healthType === 'command';
+}
+
 function updateRuntimeFields() {
   const runtime = $('#site-runtime').value;
   const node = runtime === 'node';
   const proxy = runtime === 'proxy';
   const generic = ['process', 'container', 'compose'].includes(runtime);
+  const container = runtime === 'container';
+  const compose = runtime === 'compose';
+  const processRuntime = runtime === 'process';
+  const mode = $('#site-container-mode').value;
+  const imageContainer = container && mode === 'image';
+  const sourceManagedBuild = compose || (container && mode !== 'image');
+
   $('#static-fields').hidden = runtime !== 'static';
   $('#node-fields').hidden = !node;
   $('#generic-runtime-fields').hidden = !generic;
   $('#proxy-fields').hidden = !proxy;
   $('#build-fields').hidden = proxy || (!$('#site-id').value && ($('#site-source').value || 'upload') !== 'git');
   $('#site-entry').required = runtime === 'static';
-  $('#site-node-entry').required = node && !$('#site-start-command').value.trim();
-  $('#site-proxy-target').required = proxy && !$('#site-id').value;
-  const container = runtime === 'container';
-  const compose = runtime === 'compose';
-  const processRuntime = runtime === 'process';
+  $('#site-node-entry').required = node;
+  $('#site-proxy-target').required = proxy;
   $('#site-runtime-preset-row').hidden = !processRuntime;
-  $('#site-start-command-row').hidden = !processRuntime;
-  $('#site-port-env-row').hidden = !processRuntime;
-  $('#site-working-directory-row').hidden = compose;
+  $('#site-start-command-row').hidden = !(processRuntime || imageContainer);
+  $('#site-start-command').required = processRuntime && ($('#site-runtime-preset').value || 'custom') === 'custom';
+  $('#site-port-env-row').hidden = !(processRuntime || container || compose);
+  $('#site-working-directory-row').hidden = !(processRuntime || imageContainer);
   $('#site-container-mode-row').hidden = !container;
+  $('#site-runtime-container-image-row').hidden = !imageContainer;
+  $('#site-runtime-container-image').required = imageContainer;
   $('#site-container-port-row').hidden = !(container || compose);
-  const mode = $('#site-container-mode').value;
   $('#site-dockerfile-path-row').hidden = !container || mode !== 'dockerfile';
+  $('#site-dockerfile-path').required = container && mode === 'dockerfile';
   $('#site-buildpack-builder-row').hidden = !container || mode !== 'buildpack';
   $('#site-compose-file-row').hidden = !compose;
   $('#site-compose-service-row').hidden = !compose;
+  $('#site-compose-file').required = compose;
+  $('#site-compose-service').required = compose;
   $('#site-container-runtime-note').hidden = !(container || compose);
+  $('#site-install-command').closest('label').hidden = sourceManagedBuild;
+  $('#site-build-command').closest('label').hidden = sourceManagedBuild;
+  $('#site-build-output').closest('label').hidden = runtime !== 'static';
   updateIsolationFields();
+  updateProbeFields();
 }
 
 $('#site-runtime').addEventListener('change', updateRuntimeFields);
 $('#site-container-mode').addEventListener('change', updateRuntimeFields);
 $('#site-start-command').addEventListener('input', updateRuntimeFields);
-$('#site-container-mode').addEventListener('change', updateRuntimeFields);
 $('#site-runtime-preset').addEventListener('change', updateRuntimeFields);
+$('#site-runtime-container-image').addEventListener('input', () => {
+  if ($('#site-runtime').value === 'container') $('#site-container-image').value = $('#site-runtime-container-image').value;
+});
+$('#site-container-image').addEventListener('input', () => {
+  if ($('#site-runtime').value === 'container') $('#site-runtime-container-image').value = $('#site-container-image').value;
+});
+$('#site-health-type').addEventListener('change', updateProbeFields);
+$('#site-readiness-type').addEventListener('change', updateProbeFields);
 
 function clearUpload(kind) {
   state.uploads[kind] = null;
@@ -322,19 +372,20 @@ function setWizardStep(step) {
 }
 
 function setSiteSource(source) {
-  const normalized = ['upload', 'git', 'proxy'].includes(source) ? source : 'upload';
+  const normalized = ['upload', 'git', 'image', 'proxy'].includes(source) ? source : 'upload';
   $('#site-source').value = normalized;
-  $$('[data-site-source]').forEach((button) => button.classList.toggle('active', button.dataset.siteSource === normalized));
+  $$('[data-site-source]').forEach((button) => { const active = button.dataset.siteSource === normalized; button.classList.toggle('active', active); button.setAttribute('aria-checked', String(active)); });
   $('#drop-zone').hidden = normalized !== 'upload';
   $('#git-source-fields').hidden = normalized !== 'git';
   $('#proxy-source-fields').hidden = normalized !== 'proxy';
   if (normalized === 'proxy') $('#site-runtime').value = 'proxy';
+  else if (normalized === 'image') { $('#site-runtime').value = 'container'; $('#site-container-mode').value = 'image'; }
   else if ($('#site-runtime').value === 'proxy') $('#site-runtime').value = 'static';
   updateRuntimeFields();
 }
 
 function applySiteTemplate(template) {
-  $$('[data-site-template]').forEach((button) => button.classList.toggle('active', button.dataset.siteTemplate === template));
+  $$('[data-site-template]').forEach((button) => { const active = button.dataset.siteTemplate === template; button.classList.toggle('active', active); button.setAttribute('aria-checked', String(active)); });
   const presets = {
     static: { source: 'upload', runtime: 'static', entry: 'index.html', install: '', build: '', output: '' },
     vite: { source: 'git', runtime: 'static', entry: 'index.html', install: 'npm ci', build: 'npm run build', output: 'dist' },
@@ -342,12 +393,15 @@ function applySiteTemplate(template) {
     next: { source: 'git', runtime: 'node', nodeEntry: '.next/standalone/server.js', install: 'npm ci', build: 'npm run build', output: '' },
     node: { source: 'git', runtime: 'node', nodeEntry: 'server.js', install: 'npm ci', build: '', output: '' },
     hugo: { source: 'git', runtime: 'static', entry: 'index.html', install: '', build: 'hugo --minify', output: 'public' },
-    fastapi: { source: 'git', runtime: 'process', runtimePreset: 'fastapi', startCommand: 'uvicorn app:app --host 0.0.0.0 --port $PORT', install: 'pip install -r requirements.txt', build: '', output: '' },
-    django: { source: 'git', runtime: 'process', runtimePreset: 'django', startCommand: 'gunicorn --bind 0.0.0.0:$PORT project.wsgi:application', install: 'pip install -r requirements.txt', build: '', output: '' },
-    bun: { source: 'git', runtime: 'process', runtimePreset: 'bun', startCommand: 'bun run start', install: 'bun install --frozen-lockfile', build: '', output: '' },
-    deno: { source: 'git', runtime: 'process', runtimePreset: 'deno', startCommand: 'deno task start', install: '', build: '', output: '' },
-    dockerfile: { source: 'git', runtime: 'container', containerMode: 'dockerfile', install: '', build: '', output: '' },
-    compose: { source: 'git', runtime: 'compose', composeFile: 'compose.yml', composeService: 'app', install: '', build: '', output: '' },
+    fastapi: { source: 'git', runtime: 'process', runtimePreset: 'fastapi', startCommand: 'uvicorn app:app --host "$HOST" --port "$PORT"', readiness: 'http', install: 'pip install -r requirements.txt', build: '', output: '' },
+    django: { source: 'git', runtime: 'process', runtimePreset: 'django', startCommand: 'gunicorn --bind "$HOST:$PORT" project.wsgi:application', readiness: 'http', install: 'pip install -r requirements.txt', build: '', output: '' },
+    bun: { source: 'git', runtime: 'process', runtimePreset: 'bun', startCommand: 'bun run start', readiness: 'http', install: 'bun install --frozen-lockfile', build: '', output: '' },
+    deno: { source: 'git', runtime: 'process', runtimePreset: 'deno', startCommand: 'deno task start', readiness: 'http', install: '', build: '', output: '' },
+    go: { source: 'git', runtime: 'process', runtimePreset: 'go', startCommand: './app', readiness: 'http', install: '', build: 'go build -o app .', output: '' },
+    java: { source: 'git', runtime: 'process', runtimePreset: 'java', startCommand: 'java -jar app.jar', readiness: 'http', install: '', build: '', output: '' },
+    dockerimage: { source: 'image', runtime: 'container', containerMode: 'image', containerImage: 'nginx:alpine', readiness: 'http', install: '', build: '', output: '' },
+    dockerfile: { source: 'git', runtime: 'container', containerMode: 'dockerfile', readiness: 'http', install: '', build: '', output: '' },
+    compose: { source: 'git', runtime: 'compose', composeFile: 'compose.yaml', composeService: 'app', readiness: 'http', install: '', build: '', output: '' },
     custom: { source: 'git', runtime: 'process', runtimePreset: 'custom', startCommand: '', install: '', build: '', output: '' },
     proxy: { source: 'proxy', runtime: 'proxy', install: '', build: '', output: '' }
   };
@@ -361,8 +415,10 @@ function applySiteTemplate(template) {
   if (preset.runtimePreset) $('#site-runtime-preset').value = preset.runtimePreset;
   if (preset.startCommand !== undefined) $('#site-start-command').value = preset.startCommand;
   if (preset.containerMode) $('#site-container-mode').value = preset.containerMode;
+  if (preset.containerImage) { $('#site-runtime-container-image').value = preset.containerImage; $('#site-container-image').value = preset.containerImage; }
   if (preset.composeFile) $('#site-compose-file').value = preset.composeFile;
   if (preset.composeService) $('#site-compose-service').value = preset.composeService;
+  if (preset.readiness) $('#site-readiness-type').value = preset.readiness;
   $('#site-install-command').value = preset.install;
   $('#site-build-command').value = preset.build;
   $('#site-build-output').value = preset.output;
@@ -383,7 +439,7 @@ $('#site-create-git-provider').addEventListener('change', () => {
 });
 $('#site-browse-git-repositories').addEventListener('click', async (event) => {
   const provider = $('#site-create-git-provider').value;
-  if (!provider) return toast('Choose GitHub or GitLab, or paste a repository URL manually.', 'error');
+  if (!provider) return toast('Choose a connected Git provider, or paste a repository URL manually.', 'error');
   setBusy(event.currentTarget, true, 'Loading…');
   try {
     const result = await api(`/api/admin/git-providers/${encodeURIComponent(provider)}/repositories`);
@@ -416,8 +472,9 @@ function openNewSite() {
   $('#upload-section').hidden = false;
   setWizardStep(1);
   setSiteSource('upload');
-  $$('[data-site-template]').forEach((button) => button.classList.remove('active'));
+  $$('[data-site-template]').forEach((button) => { button.classList.remove('active'); button.setAttribute('aria-checked', 'false'); });
   $('[data-site-template="static"]')?.classList.add('active');
+  $('[data-site-template="static"]')?.setAttribute('aria-checked', 'true');
   $('#site-enabled').parentElement.hidden = false;
   $('#site-runtime').value = 'static';
   $('#site-port').value = nextPort();
@@ -429,6 +486,7 @@ function openNewSite() {
   $('#site-runtime-port-env').value = 'PORT';
   $('#site-working-directory').value = '.';
   $('#site-container-mode').value = 'image';
+  $('#site-runtime-container-image').value = 'nginx:alpine';
   $('#site-container-port').value = '3000';
   $('#site-dockerfile-path').value = 'Dockerfile';
   $('#site-buildpack-builder').value = '';
@@ -467,7 +525,7 @@ function openNewSite() {
   $('#site-readiness-command').value = '';
   $('#site-readiness-status-min').value = '200';
   $('#site-readiness-status-max').value = '399';
-  $('#site-startup-timeout').value = '45';
+  $('#site-startup-timeout').value = '30';
   $('#site-shutdown-grace').value = '10';
   $('#site-blue-green-drain').value = '5';
   $('#site-restart-policy').value = 'on-failure';
@@ -489,6 +547,7 @@ function openNewSite() {
   $('#firewall-options').open = false;
   $('#site-runtime-isolation').value = 'process';
   $('#site-container-image').value = 'node:22-alpine';
+  $('#site-runtime-container-image').value = 'nginx:alpine';
   $('#site-cpu-limit').value = '0';
   $('#site-pids-limit').value = '128';
   $('#site-outbound-network').checked = true;
@@ -524,10 +583,22 @@ function openNewSite() {
 function updateIsolationFields() {
   const runtimeType = $('#site-runtime').value;
   const nodeRuntime = runtimeType === 'node';
-  const managedContainer = ['container', 'compose'].includes(runtimeType) || (nodeRuntime && $('#site-runtime-isolation').value === 'docker');
-  $('#site-runtime-isolation').disabled = !nodeRuntime;
-  $('#site-container-image').disabled = !(runtimeType === 'container' || (nodeRuntime && managedContainer));
-  for (const id of ['site-cpu-limit', 'site-pids-limit', 'site-outbound-network']) $(`#${id}`).disabled = !managedContainer;
+  const containerRuntime = runtimeType === 'container';
+  const composeRuntime = runtimeType === 'compose';
+  const nodeContainer = nodeRuntime && $('#site-runtime-isolation').value === 'docker';
+  const managedContainer = containerRuntime || composeRuntime || nodeContainer;
+  const imageRelevant = nodeContainer;
+  const isolationSelect = $('#site-runtime-isolation');
+  isolationSelect.disabled = !nodeRuntime;
+  isolationSelect.closest('label').hidden = !nodeRuntime;
+  const imageInput = $('#site-container-image');
+  imageInput.disabled = !imageRelevant;
+  imageInput.closest('label').hidden = !imageRelevant;
+  for (const id of ['site-cpu-limit', 'site-pids-limit', 'site-outbound-network']) {
+    const input = $(`#${id}`);
+    input.disabled = !managedContainer;
+    input.closest('label').hidden = !managedContainer;
+  }
   const anubis = $('#site-anubis-enabled').checked;
   $('#site-anubis-preset').disabled = !anubis;
   $('#site-anubis-difficulty').disabled = !anubis;
@@ -602,7 +673,7 @@ function openEditSite(site) {
   $('#site-readiness-command').value = site.readiness_command || '';
   $('#site-readiness-status-min').value = site.readiness_status_min || 200;
   $('#site-readiness-status-max').value = site.readiness_status_max || 399;
-  $('#site-startup-timeout').value = site.startup_timeout_seconds || 45;
+  $('#site-startup-timeout').value = site.startup_timeout_seconds || 30;
   $('#site-shutdown-grace').value = site.shutdown_grace_seconds ?? 10;
   $('#site-blue-green-drain').value = site.blue_green_drain_seconds ?? 5;
   $('#site-restart-policy').value = site.restart_policy || 'on-failure';
@@ -624,6 +695,7 @@ function openEditSite(site) {
   $('#firewall-options').open = site.firewall_enabled;
   $('#site-runtime-isolation').value = site.runtime_isolation || 'process';
   $('#site-container-image').value = site.container_image || 'node:22-alpine';
+  $('#site-runtime-container-image').value = site.container_image || 'nginx:alpine';
   $('#site-cpu-limit').value = site.cpu_limit || 0;
   $('#site-pids-limit').value = site.pids_limit || 128;
   $('#site-outbound-network').checked = site.outbound_network !== false;
@@ -661,8 +733,8 @@ function openEditSite(site) {
 function appendConfiguration(formData) {
   formData.append('name', $('#site-name').value);
   formData.append('runtimeType', $('#site-runtime').value);
-  formData.append('runtimePreset', $('#site-runtime-preset').value);
-  formData.append('startCommand', $('#site-start-command').value);
+  formData.append('runtimePreset', selectedRuntimePreset());
+  formData.append('startCommand', selectedStartCommand());
   formData.append('runtimePortEnv', $('#site-runtime-port-env').value || 'PORT');
   formData.append('workingDirectory', $('#site-working-directory').value || '.');
   formData.append('containerMode', $('#site-container-mode').value);
@@ -707,7 +779,7 @@ function appendConfiguration(formData) {
   formData.append('readinessCommand', $('#site-readiness-command').value);
   formData.append('readinessStatusMin', $('#site-readiness-status-min').value || '200');
   formData.append('readinessStatusMax', $('#site-readiness-status-max').value || '399');
-  formData.append('startupTimeoutSeconds', $('#site-startup-timeout').value || '45');
+  formData.append('startupTimeoutSeconds', $('#site-startup-timeout').value || '30');
   formData.append('shutdownGraceSeconds', $('#site-shutdown-grace').value || '10');
   formData.append('blueGreenDrainSeconds', $('#site-blue-green-drain').value || '5');
   formData.append('restartPolicy', $('#site-restart-policy').value);
@@ -725,7 +797,7 @@ function appendConfiguration(formData) {
   formData.append('firewallAllowedCountries', $('#site-firewall-allowed-countries').value);
   formData.append('firewallBlockBots', String($('#site-firewall-bots').checked));
   formData.append('runtimeIsolation', $('#site-runtime-isolation').value);
-  formData.append('containerImage', $('#site-container-image').value);
+  formData.append('containerImage', $('#site-runtime').value === 'container' && $('#site-container-mode').value === 'image' ? $('#site-runtime-container-image').value : $('#site-container-image').value);
   formData.append('cpuLimit', $('#site-cpu-limit').value || '0');
   formData.append('pidsLimit', $('#site-pids-limit').value || '128');
   formData.append('outboundNetwork', String($('#site-outbound-network').checked));
@@ -770,8 +842,8 @@ $('#site-form').addEventListener('submit', async (event) => {
         body: {
           name: $('#site-name').value,
           runtimeType: $('#site-runtime').value,
-          runtimePreset: $('#site-runtime-preset').value,
-          startCommand: $('#site-start-command').value,
+          runtimePreset: selectedRuntimePreset(),
+          startCommand: selectedStartCommand(),
           runtimePortEnv: $('#site-runtime-port-env').value || 'PORT',
           workingDirectory: $('#site-working-directory').value || '.',
           containerMode: $('#site-container-mode').value,
@@ -815,7 +887,7 @@ $('#site-form').addEventListener('submit', async (event) => {
           readinessCommand: $('#site-readiness-command').value,
           readinessStatusMin: $('#site-readiness-status-min').value || '200',
           readinessStatusMax: $('#site-readiness-status-max').value || '399',
-          startupTimeoutSeconds: $('#site-startup-timeout').value || '45',
+          startupTimeoutSeconds: $('#site-startup-timeout').value || '30',
           shutdownGraceSeconds: $('#site-shutdown-grace').value || '10',
           blueGreenDrainSeconds: $('#site-blue-green-drain').value || '5',
           restartPolicy: $('#site-restart-policy').value,
@@ -833,7 +905,7 @@ $('#site-form').addEventListener('submit', async (event) => {
           firewallAllowedCountries: $('#site-firewall-allowed-countries').value,
           firewallBlockBots: $('#site-firewall-bots').checked,
           runtimeIsolation: $('#site-runtime-isolation').value,
-          containerImage: $('#site-container-image').value,
+          containerImage: $('#site-runtime').value === 'container' && $('#site-container-mode').value === 'image' ? $('#site-runtime-container-image').value : $('#site-container-image').value,
           cpuLimit: $('#site-cpu-limit').value || '0',
           pidsLimit: $('#site-pids-limit').value || '128',
           outboundNetwork: $('#site-outbound-network').checked,
@@ -865,6 +937,7 @@ $('#site-form').addEventListener('submit', async (event) => {
         }
       }
       if (source === 'git' && !$('#site-create-git-url').value.trim()) throw new Error('Enter a Git repository URL.');
+      if (source === 'image' && !$('#site-runtime-container-image').value.trim()) throw new Error('Enter an OCI image name.');
       if (source === 'proxy' && !$('#site-proxy-target').value.trim()) throw new Error('Enter the upstream HTTP(S) URL.');
       const formData = new FormData();
       appendConfiguration(formData);

@@ -71,6 +71,17 @@ function terminateAndWait(child, graceMs = 5000) {
   });
 }
 
+
+async function settleInBatches(items, worker, concurrency = 4) {
+  const results = [];
+  const width = Math.max(1, Math.min(Number(concurrency) || 1, 16));
+  for (let index = 0; index < items.length; index += width) {
+    const batch = items.slice(index, index + width);
+    results.push(...await Promise.allSettled(batch.map(worker)));
+  }
+  return results;
+}
+
 function validateToken(value) {
   const token = String(value || '').trim();
   if (!token || token.length > MAX_TOKEN_LENGTH || /[\s\0]/.test(token)) {
@@ -524,7 +535,7 @@ class SiteCloudflareTunnelRegistry {
 
   async startEnabled() {
     const rows = this.db.prepare('SELECT site_id FROM site_cloudflare_tunnels WHERE enabled = 1 ORDER BY site_id').all();
-    const results = await Promise.allSettled(rows.map(({ site_id: siteId }) => this._manager(siteId).start()));
+    const results = await settleInBatches(rows, ({ site_id: siteId }) => this._manager(siteId).start(), 4);
     for (let index = 0; index < results.length; index += 1) {
       if (results[index].status === 'rejected') this.log(rows[index].site_id, 'error', `Could not start Cloudflare Tunnel: ${results[index].reason?.message || results[index].reason}`);
     }
@@ -550,7 +561,7 @@ class SiteCloudflareTunnelRegistry {
 
   async shutdown() {
     const managers = [...this.managers.values()];
-    await Promise.allSettled(managers.map((manager) => manager.shutdown()));
+    await settleInBatches(managers, (manager) => manager.shutdown(), 4);
     this.managers.clear();
   }
 }

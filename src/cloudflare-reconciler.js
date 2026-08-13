@@ -9,26 +9,29 @@ class CloudflareReconciler {
     this.manager = manager;
     this.getSetting = getSetting;
     this.running = false;
+    this.stopping = false;
     this.lastRunAt = 0;
     this.timer = setInterval(() => this.tick().catch((error) => this.manager.log(null, 'error', `Cloudflare reconciliation failed: ${error.message}`)), 60_000);
     this.timer.unref?.();
   }
 
   async tick({ force = false } = {}) {
+    if (this.stopping) return { skipped: 'stopping' };
     if (this.running) return { skipped: 'running' };
     if (!force && this.getSetting('cloudflare_reconcile_enabled', '0') !== '1') return { skipped: 'disabled' };
     const minutes = Math.min(Math.max(Number(this.getSetting('cloudflare_reconcile_minutes', '15')) || 15, 1), 1440);
     if (!force && Date.now() - this.lastRunAt < minutes * 60_000) return { skipped: 'interval' };
     this.running = true;
-    this.lastRunAt = Date.now();
     const token = getSecretSetting(this.db, 'cloudflare_api_token', '');
     const zoneId = this.getSetting('cloudflare_zone_id', '');
     const targetIp = this.getSetting('cloudflare_target_ip', '');
     if (!token || !zoneId || !targetIp) { this.running = false; return { skipped: 'unconfigured' }; }
+    this.lastRunAt = Date.now();
     const rows = this.db.prepare('SELECT id FROM sites WHERE cloudflare_auto_sync = 1 AND domain != ? ORDER BY id').all('');
     const results = [];
     try {
       for (const row of rows) {
+        if (this.stopping) break;
         const site = this.manager.getSite(row.id);
         if (!site?.domain) continue;
         try {
@@ -48,7 +51,11 @@ class CloudflareReconciler {
     } finally { this.running = false; }
   }
 
-  stop() { clearInterval(this.timer); }
+  async stop() {
+    this.stopping = true;
+    clearInterval(this.timer);
+    while (this.running) await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 module.exports = { CloudflareReconciler };

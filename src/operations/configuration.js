@@ -75,7 +75,9 @@ class ConfigurationOperations {
   async clearStalePreviews() {
     const rows = this.db.prepare('SELECT directory_name FROM preview_deployments').all();
     this.db.prepare('DELETE FROM preview_deployments').run();
-    await Promise.allSettled(rows.map((row) => fs.promises.rm(path.join(PREVIEWS_DIR, row.directory_name), { recursive: true, force: true })));
+    for (let index = 0; index < rows.length; index += 8) {
+      await Promise.allSettled(rows.slice(index, index + 8).map((row) => fs.promises.rm(path.join(PREVIEWS_DIR, row.directory_name), { recursive: true, force: true })));
+    }
   }
 
   siteEnvironment(siteId, scope = 'runtime') {
@@ -248,8 +250,15 @@ class ConfigurationOperations {
 
   async executeSiteCommand(site, command, timeoutMs, onLine) {
     const root = siteRoot(site);
-    if (site.runtime_isolation === 'docker') {
-      return runProcess(DOCKER_BIN, ['exec', `sham-site-${site.id}`, 'sh', '-lc', command], this.trackedProcessOptions({ timeoutMs, onLine }));
+    const backend = this.manager.running.get(Number(site.id))?.backend || null;
+    if (backend?.driver === 'container') {
+      return runProcess(DOCKER_BIN, ['exec', backend.containerName || backend.containerId, '/bin/sh', '-lc', command], this.trackedProcessOptions({ timeoutMs, onLine }));
+    }
+    if (backend?.driver === 'compose') {
+      return runProcess(DOCKER_BIN, ['compose', '-p', backend.composeProject, ...(backend.composeFiles || [backend.composeFile]).flatMap((composeFile) => ['-f', composeFile]), 'exec', '-T', backend.composeService, '/bin/sh', '-lc', command], this.trackedProcessOptions({ cwd: backend.cwd, env: backend.env, timeoutMs, onLine }));
+    }
+    if (site.runtime_type === 'container' || site.runtime_type === 'compose' || (site.runtime_type === 'node' && site.runtime_isolation === 'docker')) {
+      throw new Error('The container runtime must be running before a scheduled or manual site command can execute inside it.');
     }
     const shell = process.platform === 'win32' ? process.env.ComSpec || 'cmd.exe' : '/bin/sh';
     const args = process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-lc', command];
@@ -465,10 +474,10 @@ class ConfigurationOperations {
       if (!skipRetention) {
         const retention = Math.min(Math.max(Number(config.retention) || 14, 1), 365);
         const localBackups = (await fs.promises.readdir(BACKUPS_DIR)).filter((name) => /^sham-backup-.*\.tar\.gz$/.test(name)).sort().reverse();
-        await Promise.all(localBackups.slice(retention).map((name) => fs.promises.rm(path.join(BACKUPS_DIR, name), { force: true })));
+        for (const name of localBackups.slice(retention)) await fs.promises.rm(path.join(BACKUPS_DIR, name), { force: true });
         if (externalLocalDirectory) {
           const externalBackups = (await fs.promises.readdir(externalLocalDirectory)).filter((name) => /^sham-backup-.*\.tar\.gz$/.test(name)).sort().reverse();
-          await Promise.all(externalBackups.slice(retention).map((name) => fs.promises.rm(path.join(externalLocalDirectory, name), { force: true })));
+          for (const name of externalBackups.slice(retention)) await fs.promises.rm(path.join(externalLocalDirectory, name), { force: true });
         }
       }
       this.manager.log(null, 'info', `Backup ${filename} completed using ${provider}; archive integrity was verified.`);

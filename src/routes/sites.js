@@ -104,10 +104,25 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       LIMIT 100
     `).all().map((visitor) => ({ ...visitor, actionable: net.isIP(String(visitor.ip || '')) > 0 }));
     const clientTypes = db.prepare(`SELECT client_type AS type, SUM(requests) AS requests, COUNT(DISTINCT ip) AS visitors FROM site_visitor_stats GROUP BY client_type ORDER BY requests DESC`).all();
-    const failedDeployments = db.prepare("SELECT COUNT(*) AS count FROM site_deployments WHERE status = 'failed' AND started_at >= datetime('now', '-7 days')").get().count;
-    const unhealthySites = sites.filter((site) => site.enabled && (!site.running || site.healthStatus === 'unhealthy')).length;
-    const activeAlerts = performanceMonitor.payload().alerts?.length || 0;
-    res.json({ totals: { ...totals, running: manager.running.size }, sites, daily, countries, visitors, clientTypes, attention: { unhealthySites, failedDeployments, activeAlerts } });
+    const failedDeploymentRows = db.prepare(`
+      SELECT deployment.id, deployment.site_id AS siteId, sites.name AS siteName, deployment.source,
+        deployment.status, deployment.detail, deployment.started_at AS startedAt, deployment.finished_at AS finishedAt
+      FROM site_deployments AS deployment
+      JOIN sites ON sites.id = deployment.site_id
+      WHERE deployment.status = 'failed' AND deployment.started_at >= datetime('now', '-7 days')
+      ORDER BY deployment.started_at DESC LIMIT 50
+    `).all();
+    const unhealthySiteRows = sites.filter((site) => site.enabled && (!site.running || site.healthStatus === 'unhealthy')).map((site) => ({
+      id: site.id, name: site.name, runtimeType: site.runtime_type, running: site.running, healthStatus: site.healthStatus || (site.running ? 'starting' : 'stopped')
+    }));
+    const performance = performanceMonitor.payload();
+    const alertRows = (performance.alerts || []).slice(0, 50);
+    const automatedTrafficRows = clientTypes.filter((row) => ['llm', 'search', 'crawler'].includes(row.type));
+    res.json({
+      totals: { ...totals, running: manager.running.size }, sites, daily, countries, visitors, clientTypes,
+      attention: { unhealthySites: unhealthySiteRows.length, failedDeployments: failedDeploymentRows.length, activeAlerts: alertRows.length },
+      attentionDetails: { unhealthySites: unhealthySiteRows, failedDeployments: failedDeploymentRows, activeAlerts: alertRows, automatedTraffic: automatedTrafficRows }
+    });
   });
 
   app.get('/api/performance', requireAuth, async (req, res) => {
@@ -161,11 +176,14 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
     const allowedKinds = new Set(['cpu_percent', 'error_percent', 'p95_response_ms', 'request_rate', 'memory_percent', 'traffic_multiplier']);
     const allowedSeverity = new Set(['warning', 'critical']);
     const normalized = [];
+    const seenKinds = new Set();
     for (const row of rows) {
       const kind = String(row?.kind || '').trim();
       const threshold = Number(row?.threshold);
       const severity = String(row?.severity || 'warning').trim();
       if (!allowedKinds.has(kind)) return res.status(400).json({ error: `Unsupported alert rule: ${kind || 'empty kind'}.` });
+      if (seenKinds.has(kind)) return res.status(400).json({ error: `Only one ${kind} alert rule can be configured per site.` });
+      seenKinds.add(kind);
       if (!Number.isFinite(threshold) || threshold < 0) return res.status(400).json({ error: `Alert threshold for ${kind} must be a non-negative number.` });
       if (!allowedSeverity.has(severity)) return res.status(400).json({ error: `Alert severity for ${kind} must be warning or critical.` });
       const maximum = kind === 'p95_response_ms' ? 600000 : kind === 'request_rate' ? 1000000 : kind === 'traffic_multiplier' ? 1000 : 1000;
@@ -209,10 +227,10 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
       const input = { ...req.body, port: req.body.port || nextAvailableSitePort() };
       const config = validateSiteInput(input);
       const source = config.runtime_type === 'proxy' ? 'proxy' : String(req.body.source || 'upload').toLowerCase();
-      if (!['upload', 'git', 'proxy'].includes(source)) throw new Error('Deployment source must be upload, git, or proxy.');
+      if (!['upload', 'git', 'image', 'proxy'].includes(source)) throw new Error('Deployment source must be upload, git, image, or proxy.');
+      if (source === 'image' && !(config.runtime_type === 'container' && config.container_mode === 'image')) throw new Error('Docker image sources require the Container runtime with Existing OCI image mode.');
       if (source === 'git' && req.user.role !== 'admin') throw new Error('Git deployments require an administrator account.');
-      if (config.runtime_type === 'compose' && req.user.role !== 'admin') throw new Error('Docker Compose runtimes require an administrator account.');
-      if (config.runtime_type === 'container' && ['dockerfile', 'buildpack', 'nixpacks'].includes(config.container_mode) && req.user.role !== 'admin') throw new Error('Source-built container runtimes require an administrator account.');
+      if ((config.runtime_type === 'compose' || config.runtime_type === 'container' || config.runtime_isolation === 'docker' || config.anubis_enabled) && req.user.role !== 'admin') throw new Error('Docker-backed runtimes require an administrator account.');
       if (source === 'git' && !config.git_url) throw new Error('Choose a Git repository before deploying from Git.');
       checkPort(config.port);
       if (config.ssl_enabled && (!config.domain || !hasCertificate(config.domain))) {
@@ -360,9 +378,9 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
         });
       } else {
         const deploymentId = operationsManager.recordDeployment(id, {
-          source: source === 'proxy' ? 'proxy-config' : 'upload',
+          source: source === 'proxy' ? 'proxy-config' : source === 'image' ? 'image-config' : 'upload',
           status: 'running',
-          detail: source === 'proxy' ? `Proxy target configured: ${config.proxy_target}` : 'Initial project upload installed.'
+          detail: source === 'proxy' ? `Proxy target configured: ${config.proxy_target}` : source === 'image' ? `OCI image configured: ${config.container_image}` : 'Initial project upload installed.'
         });
         deployment = operationsManager.listDeployments(id).find((item) => item.id === deploymentId) || null;
       }
@@ -422,6 +440,9 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
     const wasRunning = manager.statusFor(site.id).running;
     try {
       const config = validateSiteInput(req.body, site);
+      if ((config.runtime_type === 'compose' || config.runtime_type === 'container' || config.runtime_isolation === 'docker' || config.anubis_enabled) && req.user.role !== 'admin') {
+        throw new Error('Docker-backed runtime settings require an administrator account.');
+      }
       checkPort(config.port, site.id);
       config.slug = uniqueSlug(config.slug, site.id);
       const domainChanged = config.domain !== site.domain;
@@ -469,38 +490,60 @@ app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().m
     }
   });
 
-  app.patch('/api/sites/:id/toggle', requireAuth, async (req, res) => {
-    const site = getSiteOr404(req, res);
-    if (!site) return;
-    const enabled = bool(req.body.enabled, !site.enabled);
-    try {
-      if (enabled) {
-        await manager.start(site.id);
-        try {
-          db.prepare('UPDATE sites SET enabled = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(site.id);
-        } catch (error) {
-          await manager.stop(site.id);
-          throw new Error(`The site started, but SHAM could not persist its enabled state: ${error.message}`);
+  async function setSiteEnabled(site, enabled) {
+    const wasRunning = manager.statusFor(site.id).running;
+    if (enabled) {
+      if (!wasRunning) await manager.start(site.id);
+      try {
+        db.prepare('UPDATE sites SET enabled = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(site.id);
+      } catch (error) {
+        if (!wasRunning) {
+          try { await manager.stop(site.id); } catch { /* Preserve the persistence error. */ }
         }
-      } else {
-        const wasRunning = manager.statusFor(site.id).running;
-        await manager.stop(site.id);
-        try {
-          db.prepare('UPDATE sites SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(site.id);
-        } catch (error) {
-          if (wasRunning) {
-            try { await manager.start(site); }
-            catch (restoreError) { throw new Error(`SHAM could not persist the stopped state, and the site could not be restored: ${error.message}; ${restoreError.message}`); }
-          }
-          throw new Error(`The site was stopped, but SHAM could not persist its disabled state: ${error.message}`);
-        }
+        throw new Error(`The site ${wasRunning ? 'was already running' : 'started'}, but SHAM could not persist its enabled state: ${error.message}`);
       }
-      edgeProxy.invalidateSiteCache();
+    } else {
+      if (wasRunning) await manager.stop(site.id);
+      try {
+        db.prepare('UPDATE sites SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(site.id);
+      } catch (error) {
+        if (wasRunning) {
+          try { await manager.start(site); }
+          catch (restoreError) { throw new Error(`SHAM could not persist the stopped state, and the site could not be restored: ${error.message}; ${restoreError.message}`); }
+        }
+        throw new Error(`The site ${wasRunning ? 'was stopped' : 'was already stopped'}, but SHAM could not persist its disabled state: ${error.message}`);
+      }
+    }
+    edgeProxy.invalidateSiteCache();
+    return manager.decorate(manager.getSite(site.id));
+  }
+
+  async function respondWithSiteState(req, res, site, enabled) {
+    try {
+      const updated = await setSiteEnabled(site, enabled);
       recordAudit(req.user.id, enabled ? 'site.start' : 'site.stop', { id: site.id });
-      res.json({ site: manager.decorate(manager.getSite(site.id)) });
+      res.json({ site: updated });
     } catch (error) {
       res.status(409).json({ error: error.message, site: manager.decorate(manager.getSite(site.id)) });
     }
+  }
+
+  app.patch('/api/sites/:id/toggle', requireAuth, async (req, res) => {
+    const site = getSiteOr404(req, res);
+    if (!site) return;
+    await respondWithSiteState(req, res, site, bool(req.body.enabled, !site.enabled));
+  });
+
+  app.post('/api/sites/:id/start', requireAuth, async (req, res) => {
+    const site = getSiteOr404(req, res);
+    if (!site) return;
+    await respondWithSiteState(req, res, site, true);
+  });
+
+  app.post('/api/sites/:id/stop', requireAuth, async (req, res) => {
+    const site = getSiteOr404(req, res);
+    if (!site) return;
+    await respondWithSiteState(req, res, site, false);
   });
 
   app.post('/api/sites/:id/restart', requireAuth, async (req, res) => {

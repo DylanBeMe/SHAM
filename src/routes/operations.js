@@ -17,7 +17,11 @@ function authenticateDeployWebhook(req, res, next) {
     const site = manager.getSite(Number(req.params.id));
     const configuredSecret = site ? operationsManager.siteEnvironment(site.id, 'build').DEPLOY_WEBHOOK_SECRET : '';
     const verificationSecret = configuredSecret || DEPLOY_WEBHOOK_DUMMY_SECRET;
-    const supplied = String(req.get('x-hub-signature-256') || req.get('x-sham-signature') || '').trim().toLowerCase();
+    const rawSignature = String(
+      req.get('x-hub-signature-256') || req.get('x-hub-signature') || req.get('x-gitea-signature') ||
+      req.get('x-forgejo-signature') || req.get('x-sham-signature') || ''
+    ).trim().toLowerCase();
+    const supplied = /^[0-9a-f]{64}$/i.test(rawSignature) ? `sha256=${rawSignature}` : rawSignature;
     const gitlabToken = String(req.get('x-gitlab-token') || '');
     const expected = `sha256=${crypto.createHmac('sha256', verificationSecret).update(req.rawBody || Buffer.alloc(0)).digest('hex')}`;
     const hmacValid = supplied.length === expected.length && crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
@@ -30,10 +34,16 @@ function authenticateDeployWebhook(req, res, next) {
 
   app.post('/api/hooks/deploy/:id', webhookLimiter, authenticateDeployWebhook, serializeSiteMutation, async (req, res) => {
     const site = req.deployWebhookSite;
-    const requestedBranch = String(req.body?.ref || '').replace(/^refs\/heads\//, '');
+    const bitbucketBranch = Array.isArray(req.body?.push?.changes)
+      ? req.body.push.changes.find((change) => change?.new?.type === 'branch')?.new?.name
+      : '';
+    const requestedBranch = String(req.body?.ref || bitbucketBranch || '').replace(/^refs\/heads\//, '');
     if (requestedBranch && site.git_branch && requestedBranch !== site.git_branch) return res.status(202).json({ ignored: true, reason: 'The push was for another branch.' });
-    const deliveryId = String(req.get('x-github-delivery') || req.get('x-gitlab-event-uuid') || req.get('x-sham-delivery') || '').trim();
-    if (!/^[A-Za-z0-9._:-]{1,200}$/.test(deliveryId)) return res.status(400).json({ error: 'A valid X-GitHub-Delivery or X-SHAM-Delivery identifier is required.' });
+    const deliveryId = String(
+      req.get('x-github-delivery') || req.get('x-gitlab-event-uuid') || req.get('x-request-uuid') || req.get('x-hook-uuid') ||
+      req.get('x-gitea-delivery') || req.get('x-forgejo-delivery') || req.get('x-sham-delivery') || ''
+    ).trim();
+    if (!/^[A-Za-z0-9._:{}-]{1,200}$/.test(deliveryId)) return res.status(400).json({ error: 'A valid provider webhook delivery identifier is required.' });
     db.prepare("DELETE FROM deploy_webhook_deliveries WHERE received_at < datetime('now', '-14 days')").run();
     try {
       db.prepare('INSERT INTO deploy_webhook_deliveries (site_id, delivery_id) VALUES (?, ?)').run(site.id, deliveryId);
@@ -275,7 +285,7 @@ function authenticateDeployWebhook(req, res, next) {
   app.get('/api/admin/git-providers', requireAuth, requireAdmin, (_req, res) => res.json({ providers: providerStatuses(db) }));
   app.put('/api/admin/git-providers/:provider', requireAuth, requireAdmin, (req, res) => {
     try {
-      const providers = saveProviderToken(db, req.params.provider, { token: req.body?.token, clearToken: bool(req.body?.clearToken, false) });
+      const providers = saveProviderToken(db, req.params.provider, { token: req.body?.token, clearToken: bool(req.body?.clearToken, false), baseUrl: req.body?.baseUrl });
       recordAudit(req.user.id, 'git-provider.configure', { provider: String(req.params.provider || '').toLowerCase(), connected: providers.find((item) => item.provider === String(req.params.provider || '').toLowerCase())?.configured || false });
       res.json({ providers });
     } catch (error) { res.status(400).json({ error: error.message }); }

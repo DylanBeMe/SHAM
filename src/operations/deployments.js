@@ -16,8 +16,8 @@ class DeploymentOperations extends ConfigurationOperations {
     return path.join(path.resolve(hostData), relative);
   }
 
-  async runContainerBuildCommand(site, stage, command, environment, label, deploymentId) {
-    const image = String(site.container_image || 'node:22-alpine').trim();
+  async runContainerBuildCommand(site, stage, command, environment, label, deploymentId, imageRef) {
+    const image = String(imageRef || '').trim();
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._/@:-]{0,255}$/.test(image)) throw new Error('Container image is invalid.');
     const envFile = await createEnvFile(site.id, environment);
     try {
@@ -55,7 +55,7 @@ class DeploymentOperations extends ConfigurationOperations {
 
   async configureProviderWebhook(site, baseUrl) {
     if (!site?.git_url) return null;
-    const provider = providerForRepositoryUrl(site.git_url);
+    const provider = providerForRepositoryUrl(site.git_url, this.db);
     const origin = normalizeWebhookBaseUrl(baseUrl);
     if (!provider || !origin) return null;
     const secret = this.ensureDeployWebhookSecret(site.id);
@@ -90,16 +90,22 @@ class DeploymentOperations extends ConfigurationOperations {
       const configuredInstall = String(installCommand || spec.installCommand || '').trim();
       const configuredBuild = String(buildCommand || spec.buildCommand || '').trim();
       const outputDirectory = String(buildOutputDir || spec.buildOutputDir || '').trim();
-      const isolatedBuild = ['container', 'compose'].includes(spec.driver);
+      const sourceManagedBuild = spec.driver === 'compose' || (spec.driver === 'container' && spec.container.mode !== 'image');
+      if (sourceManagedBuild && (configuredInstall || configuredBuild)) {
+        throw new Error(spec.driver === 'compose'
+          ? 'Docker Compose deployments must define build/install steps in the Compose service or its Dockerfile; SHAM install/build commands are not applied to Compose projects.'
+          : `${spec.container.mode} deployments must define build/install steps in their image build configuration; SHAM install/build commands are only supported for existing-image container deployments.`);
+      }
+      const isolatedBuild = spec.driver === 'container' && spec.container.mode === 'image';
       if (configuredInstall) {
-        if (isolatedBuild) await this.runContainerBuildCommand(site, stage, configuredInstall, environment, 'install', deploymentId);
+        if (isolatedBuild) await this.runContainerBuildCommand(site, stage, configuredInstall, environment, 'install', deploymentId, spec.container.image);
         else await runConfiguredCommand(configuredInstall, this.trackedProcessOptions({ cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `install: ${line}`, { deploymentId }) }));
       } else if (installDependencies && site.runtime_type === 'node' && !(site.runtime_isolation === 'docker')) {
         const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
         await runProcess(npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], this.trackedProcessOptions({ cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `npm: ${line}`, { deploymentId }) }));
       }
       if (configuredBuild) {
-        if (isolatedBuild) await this.runContainerBuildCommand(site, stage, configuredBuild, environment, 'build', deploymentId);
+        if (isolatedBuild) await this.runContainerBuildCommand(site, stage, configuredBuild, environment, 'build', deploymentId, spec.container.image);
         else await runConfiguredCommand(configuredBuild, this.trackedProcessOptions({ cwd: stage, timeoutMs: GIT_TIMEOUT_MS, env: environment, environmentMode: 'build', onLine: (level, line) => this.manager.log(site.id, level, `build: ${line}`, { deploymentId }) }));
       }
       if (outputDirectory && spec.driver === 'static') {
@@ -245,7 +251,7 @@ class DeploymentOperations extends ConfigurationOperations {
       EXISTS(SELECT 1 FROM site_releases active WHERE active.site_id = d.site_id AND active.active = 1 AND (active.deployment_id = d.id OR (active.deployment_id IS NULL AND d.commit_sha <> '' AND active.commit_sha = d.commit_sha))) AS activeRelease,
       (SELECT COUNT(*) FROM runtime_logs logs WHERE logs.deployment_id = d.id) AS logCount
       FROM site_deployments d WHERE d.site_id = ? ORDER BY d.id DESC LIMIT ?`).all(Number(siteId), bounded)
-      .map((row) => ({ ...row, activeRelease: Boolean(row.activeRelease), commitUrl: site?.git_url ? providerCommitUrl(site.git_url, row.commitSha) : '' }));
+      .map((row) => ({ ...row, activeRelease: Boolean(row.activeRelease), commitUrl: site?.git_url ? providerCommitUrl(site.git_url, row.commitSha, this.db) : '' }));
   }
 
   deploymentLogs(siteId, deploymentId, limit = 500) {
@@ -280,7 +286,7 @@ class DeploymentOperations extends ConfigurationOperations {
         this.manager.log(site.id, 'error', warning, { deploymentId });
       }
       this.manager.log(site.id, 'info', warning ? 'Deployment activated with a metadata warning.' : 'Deployment activated successfully.', { deploymentId });
-      return { ...release, deploymentId, commitAuthor: cloned.commitAuthor, commitMessage: cloned.commitMessage, commitUrl: providerCommitUrl(cloned.repository, cloned.commitSha), warning };
+      return { ...release, deploymentId, commitAuthor: cloned.commitAuthor, commitMessage: cloned.commitMessage, commitUrl: providerCommitUrl(cloned.repository, cloned.commitSha, this.db), warning };
     } catch (error) {
       try { this.finishDeployment(deploymentId, 'failed', error.message); }
       catch (historyError) { this.manager.log(site.id, 'error', `Could not persist failed deployment state: ${historyError.message}`, { deploymentId }); }
@@ -524,11 +530,29 @@ class DeploymentOperations extends ConfigurationOperations {
     child.stderr.on('data', (chunk) => this.manager.log(site.id, 'error', `anubis: ${chunk.toString().trim().slice(0, 1200)}`));
     await new Promise((resolve, reject) => {
       const started = Date.now();
+      let settled = false;
+      let retryTimer = null;
+      let spawnError = null;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        if (retryTimer) clearTimeout(retryTimer);
+        child.off('error', onSpawnError);
+        if (error) reject(error); else resolve();
+      };
+      const onSpawnError = (error) => { spawnError = error; finish(new Error(`Could not start Anubis Docker runtime: ${error.message}`)); };
+      child.once('error', onSpawnError);
       const check = () => {
-        if (child.exitCode !== null) return reject(new Error('Anubis exited during startup. Verify Docker and the pinned image.'));
+        if (settled) return;
+        if (spawnError) return finish(new Error(`Could not start Anubis Docker runtime: ${spawnError.message}`));
+        if (child.exitCode !== null || child.signalCode !== null) return finish(new Error('Anubis exited during startup. Verify Docker and the pinned image.'));
         const socket = net.connect({ host: '127.0.0.1', port });
-        socket.once('connect', () => { socket.destroy(); resolve(); });
-        socket.once('error', () => { socket.destroy(); if (Date.now() - started > 30_000) reject(new Error('Anubis did not become ready within 30 seconds.')); else setTimeout(check, 200); });
+        socket.once('connect', () => { socket.destroy(); finish(); });
+        socket.once('error', () => {
+          socket.destroy();
+          if (Date.now() - started > 30_000) finish(new Error('Anubis did not become ready within 30 seconds.'));
+          else { retryTimer = setTimeout(check, 200); retryTimer.unref?.(); }
+        });
       };
       check();
     }).catch(async (error) => { terminate(child); await runProcess(DOCKER_BIN, ['rm', '-f', `sham-anubis-${site.id}`], this.trackedProcessOptions({ timeoutMs: 10_000 })).catch(() => {}); throw error; });

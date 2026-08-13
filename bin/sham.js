@@ -19,7 +19,7 @@ function options(argv) {
   return out;
 }
 
-async function api(path, { method = 'GET', body = undefined } = {}) {
+async function api(path, { method = 'GET', body = undefined, timeoutMs = 30_000 } = {}) {
   const base = String(process.env.SHAM_URL || '').replace(/\/+$/, '');
   const token = String(process.env.SHAM_TOKEN || '');
   if (!/^https?:\/\//.test(base)) throw new Error('Set SHAM_URL to the dashboard HTTP(S) URL.');
@@ -28,7 +28,8 @@ async function api(path, { method = 'GET', body = undefined } = {}) {
     method,
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body),
-    redirect: 'error'
+    redirect: 'error',
+    signal: AbortSignal.timeout(timeoutMs)
   });
   const text = await response.text();
   let payload = null;
@@ -66,14 +67,14 @@ async function main() {
     const body = {};
     if (args.branch) body.branch = args.branch;
     if (args['approve-manifest']) body.approveManifestChanges = true;
-    const result = await api(`/api/sites/${siteId}/deploy/git`, { method: 'POST', body });
+    const result = await api(`/api/sites/${siteId}/deploy/git`, { method: 'POST', body, timeoutMs: 30 * 60_000 });
     process.stdout.write(`Deployment ${result.release?.deploymentId || result.release?.id || ''} active${result.warning ? ` with warning: ${result.warning}` : ''}.\n`);
     return;
   }
   if (command === 'rollback') {
     const releaseId = Number(args._[1]);
     if (!Number.isSafeInteger(releaseId) || releaseId < 1) throw new Error('A numeric release ID is required.');
-    const result = await api(`/api/sites/${siteId}/releases/${releaseId}/rollback`, { method: 'POST', body: {} });
+    const result = await api(`/api/sites/${siteId}/releases/${releaseId}/rollback`, { method: 'POST', body: {}, timeoutMs: 10 * 60_000 });
     process.stdout.write(`Rollback complete${result.warning ? ` with warning: ${result.warning}` : ''}.\n`);
     return;
   }

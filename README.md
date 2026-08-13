@@ -36,7 +36,22 @@ It supports:
 - Structured line-buffered runtime logs, privacy-aware visitor retention, per-site alert rules, anomaly detection, seven-day CPU/p50/p95 history, and a live performance monitor.
 - Purple-first preset themes plus a local custom-theme editor.
 - Docker deployment with a configurable persistent storage path.
-- Optional per-site Docker isolation, atomic release deployment and rollback, Git/webhook delivery, encrypted GitHub/GitLab provider connections, deployment history, preview hostnames, encrypted environment variables and database profiles, scheduled jobs, off-host backups, Anubis anti-bot sidecars, observability exports, public status, localization, and signed SHAM updates.
+- Optional per-site Docker isolation, atomic release deployment and rollback, Git/webhook delivery, encrypted GitHub/GitLab/Bitbucket Cloud/Gitea/Forgejo provider connections, deployment history, preview hostnames, encrypted environment variables and database profiles, scheduled jobs, off-host backups, Anubis anti-bot sidecars, observability exports, public status, localization, and signed SHAM updates.
+
+## Documentation
+
+The full manual is split into focused guides:
+
+- [Documentation index](docs/README.md)
+- [Getting started](docs/getting-started.md)
+- [Runtimes and Docker](docs/runtimes-and-docker.md)
+- [Git and CI/CD](docs/git-and-cicd.md)
+- [API and CLI](docs/api-and-cli.md)
+- [Operations and security](docs/operations-and-security.md)
+- [Plugin development](docs/plugin-development.md)
+- [Troubleshooting](docs/troubleshooting.md)
+
+The dashboard also includes categorized documentation and the command palette can search documentation, settings, sites, performance, logs, and common actions.
 
 ## Important trust boundary
 
@@ -121,7 +136,7 @@ Managed-process presets include Node.js, `npm run start`, Bun, Deno, FastAPI/Uvi
 
 Container mode supports a prebuilt OCI image, a repository `Dockerfile`, Cloud Native Buildpacks (`pack`), or Nixpacks. Source-built candidates are built before traffic is switched. Legacy Docker-isolated Node.js projects install production dependencies inside the selected runtime image, avoiding host-glibc/container-musl native-module mismatches. Runtime environment values are passed to Docker without embedding secret plaintext in Docker CLI arguments.
 
-Compose mode is administrator-only. Every service is checked for privileged mode, host networking/PID/IPC namespaces, added capabilities, host devices, Docker socket mounts, and absolute host bind mounts. The selected service must publish its application port, preferably with a loopback/dynamic mapping such as `127.0.0.1::3000`, so release candidates and previews can coexist. Each candidate uses a unique Compose project name.
+Compose mode validates every service before startup. SHAM rejects privileged mode, custom host/container namespaces, added capabilities, host devices, `volumes_from`, unconfined security profiles, Docker socket access, host bind mounts, host build networking, privileged build entitlements, and published ports on auxiliary services. On a host installation, the selected application service must publish only its expected TCP application port to loopback, preferably with a dynamic mapping such as `127.0.0.1::3000`, so release candidates and previews can coexist. Containerized SHAM connects the selected service to the configured SHAM Docker network instead of relying on the host loopback. When outbound networking is disabled, Compose project networks are forced internal and external networks are rejected. Each candidate uses a unique Compose project name.
 
 Git repositories may include `sham.yaml`, `sham.yml`, or `sham.json`. The manifest can set runtime/build commands, working directory, port variable, readiness policy, shutdown/drain timing, and container/Compose settings. SHAM hashes the execution policy and returns a conflict instead of activating a commit that changes it until an administrator explicitly approves the manifest change. Example:
 
@@ -165,7 +180,7 @@ A tunnel does not require inbound port forwarding. When Cloudflare Tunnel is the
 
 Git deployments clone into a new release directory, optionally run a bounded install command and build command, validate the configured entry/output, start the candidate, and then switch traffic. Previous releases remain available for one-click rollback. Each site workspace keeps deployment history with queued/building/running/failed/rolled-back/superseded state, duration, commit SHA, author, message, provider commit links, deployment-scoped logs, a clear active-release marker, redeploy, and rollback actions. Preview deployments receive a temporary hostname and expire automatically; they are intended for validation rather than permanent hosting.
 
-Administrators can connect GitHub or GitLab under **Settings → Instance**. Provider access tokens are encrypted at rest, are never returned to the browser, and are used to discover repositories and authenticate private HTTPS clones without embedding credentials in the stored Git URL or command line. Manual HTTPS/SSH repository URLs and deploy keys remain available. Set the externally reachable **Public SHAM URL** in the same panel and SHAM will create or repair the matching provider push webhook after successful Git deployments. The provider token must have the provider's repository/webhook permissions. If the dashboard has no public origin, leave that setting blank and configure the signed webhook manually.
+Administrators can connect GitHub, GitLab, Bitbucket Cloud, Gitea, or Forgejo under **Settings → Instance**. Gitea and Forgejo support configurable self-hosted base URLs. Provider access tokens are encrypted at rest, are never returned to the browser, and are used to discover repositories and authenticate private HTTPS clones without embedding credentials in the stored Git URL or command line. Manual HTTPS/SSH repository URLs and deploy keys remain available. Set the externally reachable **Public SHAM URL** in the same panel and SHAM will create or repair the matching provider push webhook after successful Git deployments. The provider token must have the provider's repository/webhook permissions. If the dashboard has no public origin, leave that setting blank and configure the signed webhook manually.
 
 A repository can trigger deployment through `POST /api/hooks/deploy/:id`. GitHub and SHAM-style senders use `X-Hub-Signature-256: sha256=<hex HMAC-SHA256>` or `X-SHAM-Signature: sha256=<hex HMAC-SHA256>` over the raw request body; GitLab uses its `X-Gitlab-Token` secret. Automatic provider setup generates and encrypts `DEPLOY_WEBHOOK_SECRET` for the site. For manual setup, add that variable with Build or Both scope yourself. Webhooks are rate-limited, branch-filtered, timing-safe authenticated, deduplicated by the provider delivery/event UUID, and serialized with other site mutations.
 

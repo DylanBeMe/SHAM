@@ -16,6 +16,15 @@ function renderPluginTrustedKeys(keys = []) {
   for (const key of keys) addPluginTrustedKeyRow(key);
 }
 
+function updateOidcUiState() {
+  const enabled = $('#oidc-enabled').checked;
+  const autoProvision = $('#oidc-auto-provision').checked;
+  $('#oidc-issuer').required = enabled;
+  $('#oidc-client-id').required = enabled;
+  $('#oidc-auto-provision').disabled = !enabled;
+  $('#oidc-default-role').disabled = !enabled || !autoProvision;
+}
+
 function collectPluginTrustedKeys() {
   return $$('.trusted-key-row', $('#plugin-trusted-key-rows')).map((row) => ({
     id: $('[data-trusted-key-id]', row).value.trim(),
@@ -54,6 +63,7 @@ async function loadAdmin() {
     $('#oidc-auto-provision').checked = Boolean(oidc.autoProvision);
     $('#oidc-default-role').value = oidc.defaultRole || 'user';
     $('#oidc-secret-status').textContent = oidc.clientSecretConfigured ? 'A client secret is saved.' : 'No client secret is saved (public-client OIDC is allowed).';
+    updateOidcUiState();
     const security = settings.security || {};
     $('#visitor-privacy').value = security.visitorPrivacyMode || 'mask';
     $('#log-retention').value = security.logRetentionDays || 30;
@@ -103,6 +113,9 @@ $('#clear-cloudflare-token').addEventListener('change', (event) => {
   $('#cloudflare-token').disabled = event.target.checked;
   if (event.target.checked) $('#cloudflare-token').value = '';
 });
+
+$('#oidc-enabled').addEventListener('change', updateOidcUiState);
+$('#oidc-auto-provision').addEventListener('change', updateOidcUiState);
 
 $('#oidc-clear-secret').addEventListener('change', (event) => {
   $('#oidc-client-secret').disabled = event.target.checked;

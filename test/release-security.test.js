@@ -25,7 +25,9 @@ test('multipart parsers pin the patched Multer release and disable field nesting
   const server = read('src/server.js');
   assert.equal(pkg.dependencies.multer, '2.2.0');
   assert.equal((server.match(/fieldNestingDepth:\s*0/g) || []).length, 3);
-  assert.match(server, /fields:\s*80[\s\S]*parts:\s*MAX_FILES \+ 80/);
+  const fieldLimit = Number(server.match(/const SITE_FORM_FIELD_LIMIT = (\d+);/)?.[1] || 0);
+  assert.ok(fieldLimit >= 128 && fieldLimit <= 256, `site form field limit ${fieldLimit} must leave headroom without being unbounded`);
+  assert.match(server, /fields:\s*SITE_FORM_FIELD_LIMIT[\s\S]*parts:\s*MAX_FILES \+ SITE_FORM_FIELD_LIMIT/);
   assert.match(server, /fieldNameSize:\s*100/);
 });
 
@@ -119,12 +121,14 @@ test('hosted and helper processes receive purpose-specific environment allowlist
 
 test('deployment webhook replay protection is persistent and bounded', () => {
   const db = read('src/db.js');
-  const server = read('src/server.js');
+  const operations = read('src/routes/operations.js');
   assert.match(db, /CREATE TABLE IF NOT EXISTS deploy_webhook_deliveries/);
   assert.match(db, /PRIMARY KEY \(site_id, delivery_id\)/);
-  assert.match(server, /X-GitHub-Delivery or X-SHAM-Delivery/);
-  assert.match(server, /DELETE FROM deploy_webhook_deliveries WHERE received_at < datetime\('now', '-14 days'\)/);
-  assert.match(server, /This webhook delivery was already processed/);
+  for (const header of ['x-github-delivery', 'x-gitlab-event-uuid', 'x-gitea-delivery', 'x-forgejo-delivery', 'x-sham-delivery']) {
+    assert.match(operations, new RegExp(header));
+  }
+  assert.match(operations, /DELETE FROM deploy_webhook_deliveries WHERE received_at < datetime\('now', '-14 days'\)/);
+  assert.match(operations, /This webhook delivery was already processed/);
 });
 
 test('backup generation uses a consistent database snapshot and rejects unsafe destinations', () => {

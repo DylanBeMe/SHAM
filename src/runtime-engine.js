@@ -48,34 +48,54 @@ function terminateProcessAndWait(child, graceMs = 10_000) {
 function lineLogger(stream, onLine, { maxLinesPerSecond = 200, maxLineLength = 1200, prefix = '' } = {}) {
   if (!stream) return () => {};
   let buffer = '';
+  let truncated = false;
   let windowStarted = Date.now();
   let lines = 0;
   let suppressed = 0;
+  const flushSuppressed = () => {
+    if (!suppressed) return;
+    onLine(`${prefix}suppressed ${suppressed} excessive log line${suppressed === 1 ? '' : 's'}`);
+    suppressed = 0;
+  };
   const emit = (line) => {
     const now = Date.now();
     if (now - windowStarted >= 1000) {
-      if (suppressed) onLine(`${prefix}suppressed ${suppressed} excessive log line${suppressed === 1 ? '' : 's'}`);
+      flushSuppressed();
       windowStarted = now;
       lines = 0;
-      suppressed = 0;
     }
     if (lines >= maxLinesPerSecond) { suppressed += 1; return; }
     lines += 1;
-    onLine(`${prefix}${line.slice(0, maxLineLength)}`);
+    onLine(`${prefix}${line}`);
+  };
+  const finishLine = () => {
+    if (buffer || truncated) emit(`${buffer}${truncated ? ' …[truncated]' : ''}`);
+    buffer = '';
+    truncated = false;
+  };
+  const append = (text) => {
+    if (!text || truncated) return;
+    const remaining = Math.max(0, maxLineLength - buffer.length);
+    buffer += text.slice(0, remaining);
+    if (text.length > remaining) truncated = true;
   };
   const onData = (chunk) => {
-    buffer += chunk.toString();
-    if (buffer.length > maxLineLength * 8) {
-      emit(buffer.slice(0, maxLineLength));
-      buffer = buffer.slice(maxLineLength);
+    const text = chunk.toString();
+    let cursor = 0;
+    while (cursor < text.length) {
+      const newline = text.indexOf('\n', cursor);
+      if (newline === -1) { append(text.slice(cursor)); break; }
+      let segment = text.slice(cursor, newline);
+      if (segment.endsWith('\r')) segment = segment.slice(0, -1);
+      append(segment);
+      finishLine();
+      cursor = newline + 1;
     }
-    const chunks = buffer.split(/\r?\n/);
-    buffer = chunks.pop() || '';
-    for (const line of chunks) if (line) emit(line);
   };
+  const onEnd = () => { finishLine(); flushSuppressed(); };
   stream.on('data', onData);
-  stream.once('end', () => { if (buffer) emit(buffer); buffer = ''; });
-  return () => { stream.off('data', onData); };
+  stream.once('end', onEnd);
+  return () => { stream.off('data', onData); stream.off('end', onEnd); buffer = ''; truncated = false; };
 }
 
 function shellCommand(command, { cwd, env, stdio = ['ignore', 'pipe', 'pipe'] } = {}) {
@@ -122,13 +142,19 @@ function tcpProbe(host, port, timeoutMs = 1500) {
 function httpProbe({ host, port, path: pathname = '/', statusMin = 200, statusMax = 399, tls = false, timeoutMs = 2500, headers = {} }) {
   return new Promise((resolve) => {
     const client = tls ? https : http;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
     const request = client.request({ host, port, path: pathname || '/', method: 'GET', headers, rejectUnauthorized: false, timeout: timeoutMs }, (response) => {
       response.resume();
       const status = Number(response.statusCode || 0);
-      resolve({ ok: status >= statusMin && status <= statusMax, status, message: `HTTP ${status}` });
+      finish({ ok: status >= statusMin && status <= statusMax, status, message: `HTTP ${status}` });
     });
-    request.once('timeout', () => { request.destroy(); resolve({ ok: false, message: 'HTTP probe timed out.' }); });
-    request.once('error', (error) => resolve({ ok: false, message: error.message }));
+    request.once('timeout', () => { request.destroy(); finish({ ok: false, message: 'HTTP probe timed out.' }); });
+    request.once('error', (error) => finish({ ok: false, message: error.message }));
     request.end();
   });
 }
@@ -145,7 +171,14 @@ async function waitForReadiness(spec, { child = null, cwd = spec.cwd, env = {}, 
       if (childError) throw new Error(`Runtime process could not start: ${childError.message}`);
       if (child && (child.exitCode !== null || child.signalCode !== null)) throw new Error(`Runtime exited during startup${child.exitCode !== null ? ` with code ${child.exitCode}` : child.signalCode ? ` after ${child.signalCode}` : ''}.`);
       let result;
-      if (probe.type === 'none') return true;
+      if (probe.type === 'none') {
+        // A disabled probe still waits one event-loop turn so spawn errors and immediate exits
+        // cannot be promoted as a healthy runtime.
+        await new Promise((resolve) => setImmediate(resolve));
+        if (childError) throw new Error(`Runtime process could not start: ${childError.message}`);
+        if (child && (child.exitCode !== null || child.signalCode !== null)) throw new Error(`Runtime exited during startup${child.exitCode !== null ? ` with code ${child.exitCode}` : child.signalCode ? ` after ${child.signalCode}` : ''}.`);
+        return true;
+      }
       if (probe.type === 'http') result = await httpProbe({ host, port, path: probe.path, statusMin: probe.statusMin, statusMax: probe.statusMax, headers: { Host: spec.site?.domain || host, 'User-Agent': 'SHAM-Readiness/1.0' } });
       else if (probe.type === 'command') result = await commandExit(probe.command, { cwd, env, timeoutMs: Math.min(5000, Math.max(1000, deadline - Date.now())) });
       else result = await tcpProbe(host, port);
@@ -175,20 +208,31 @@ async function createEnvFile(siteId, env) {
   return filename;
 }
 
-async function dockerPort(containerName, containerPort, { retries = 100 } = {}) {
-  for (let i = 0; i < retries; i += 1) {
+async function dockerPort(containerName, containerPort, { retries = 100, timeoutMs = 15_000 } = {}) {
+  const deadline = Date.now() + Math.max(1000, Number(timeoutMs) || 15_000);
+  for (let i = 0; i < retries && Date.now() < deadline; i += 1) {
+    const remaining = Math.max(100, deadline - Date.now());
     const result = await new Promise((resolve) => {
       const child = spawn(DOCKER_BIN, ['port', containerName, `${containerPort}/tcp`], { env: operatorEnvironment(), stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
       let output = '';
-      child.stdout.on('data', (chunk) => { output += chunk.toString(); });
-      child.once('error', () => resolve(''));
-      child.once('exit', (code) => resolve(code === 0 ? output.trim() : ''));
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      child.stdout.on('data', (chunk) => { if (output.length < 4096) output += chunk.toString().slice(0, 4096 - output.length); });
+      child.once('error', () => finish(''));
+      child.once('exit', (code) => finish(code === 0 ? output.trim() : ''));
+      const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* gone */ } finish(''); }, Math.min(1500, remaining));
+      timer.unref?.();
     });
     const match = /(?:127\.0\.0\.1|0\.0\.0\.0|\[::\]|::1):(\d+)\s*$/.exec(result.split(/\r?\n/)[0] || '');
     if (match) return Number(match[1]);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(0, deadline - Date.now()))));
   }
-  throw new Error(`Docker did not publish container port ${containerPort}.`);
+  throw new Error(`Docker did not publish container port ${containerPort} within ${Math.ceil((Number(timeoutMs) || 15_000) / 1000)} seconds.`);
 }
 
 function managedContainerName(siteId, suffix = '') {

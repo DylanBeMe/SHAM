@@ -11,18 +11,70 @@ const FAILED_MARKER = path.join(DATA_DIR, '.restore-failed.json');
 
 function runTar(args, timeoutMs = 10 * 60_000) {
   return new Promise((resolve, reject) => {
-    const child = spawn(TAR_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(TAR_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, LC_ALL: 'C' } });
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    let timer = null;
+    const finish = (error, value = '') => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error); else resolve(value);
+    };
     child.stdout.on('data', (chunk) => { stdout = `${stdout}${chunk}`.slice(-2_000_000); });
     child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-100_000); });
-    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} reject(new Error('Backup archive operation timed out.')); }, timeoutMs);
+    timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} finish(new Error('Backup archive operation timed out.')); }, timeoutMs);
     timer.unref?.();
-    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('error', (error) => finish(error));
     child.once('exit', (code) => {
+      if (code === 0) finish(null, stdout);
+      else finish(new Error(`Backup archive command failed${stderr.trim() ? `: ${stderr.trim().slice(-2000)}` : '.'}`));
+    });
+  });
+}
+
+function inspectTarLines(args, onLine, timeoutMs = 10 * 60_000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(TAR_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, LC_ALL: 'C' } });
+    let stderr = '';
+    let buffer = '';
+    let settled = false;
+    let timer = null;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      if (code === 0) resolve(stdout);
-      else reject(new Error(`Backup archive command failed${stderr.trim() ? `: ${stderr.trim().slice(-2000)}` : '.'}`));
+      if (error) reject(error); else resolve();
+    };
+    const consume = (chunk) => {
+      buffer += chunk.toString();
+      if (buffer.length > 16 * 1024 && !buffer.includes('\n')) {
+        try { child.kill('SIGKILL'); } catch {}
+        finish(new Error('Backup archive contains an excessively long entry name.'));
+        return;
+      }
+      let newline;
+      while (!settled && (newline = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newline).replace(/\r$/, '');
+        buffer = buffer.slice(newline + 1);
+        try { onLine(line); }
+        catch (error) { try { child.kill('SIGKILL'); } catch {} finish(error); }
+      }
+    };
+    child.stdout.on('data', consume);
+    child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-100_000); });
+    timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} finish(new Error('Backup archive inspection timed out.')); }, timeoutMs);
+    timer.unref?.();
+    child.once('error', (error) => finish(error));
+    child.once('exit', (code) => {
+      if (settled) return;
+      if (buffer) {
+        try { onLine(buffer.replace(/\r$/, '')); }
+        catch (error) { finish(error); return; }
+      }
+      if (code === 0) finish(null);
+      else finish(new Error(`Backup archive inspection failed${stderr.trim() ? `: ${stderr.trim().slice(-2000)}` : '.'}`));
     });
   });
 }
@@ -41,11 +93,27 @@ async function verifyBackupArchive(archivePath) {
   const real = await fs.promises.realpath(resolved);
   if (real !== path.join(backupRoot, path.basename(real))) throw new Error('Only backup archives stored in SHAM’s local backup directory can be restored.');
   if (!/^sham-backup-.*\.tar\.gz$/.test(path.basename(real))) throw new Error('Backup filename is invalid.');
-  const listing = await runTar(['-tzf', real]);
-  const entries = listing.split(/\r?\n/).filter(Boolean);
-  if (!entries.length || !entries.every(safeArchiveEntry)) throw new Error('Backup archive contains an unsafe path.');
-  if (!entries.some((name) => String(name).replace(/^\.\//, '') === 'sham.db')) throw new Error('Backup archive does not contain a SHAM database snapshot.');
-  return { archivePath: real, entries: entries.length };
+  let entries = 0;
+  let hasDatabase = false;
+  await inspectTarLines(['-tzf', real], (line) => {
+    if (!line) return;
+    entries += 1;
+    if (entries > 250_000) throw new Error('Backup archive contains too many filesystem entries.');
+    if (Buffer.byteLength(line) > 4096 || !safeArchiveEntry(line)) throw new Error('Backup archive contains an unsafe or excessively long path.');
+    if (String(line).replace(/^\.\//, '') === 'sham.db') hasDatabase = true;
+  });
+  if (!entries) throw new Error('Backup archive is empty.');
+  if (!hasDatabase) throw new Error('Backup archive does not contain a SHAM database snapshot.');
+
+  let typedEntries = 0;
+  await inspectTarLines(['-tvzf', real], (line) => {
+    if (!line) return;
+    typedEntries += 1;
+    const type = line[0];
+    if (type !== '-' && type !== 'd') throw new Error('Backup archive contains a link or special filesystem entry, which cannot be restored safely.');
+  });
+  if (typedEntries !== entries) throw new Error('Backup archive listing changed during verification.');
+  return { archivePath: real, entries };
 }
 
 async function stageBackupRestore(archivePath, metadata = {}) {
@@ -89,6 +157,18 @@ async function validateRestoreTree(root) {
     const { bytesRead } = await handle.read(header, 0, header.length, 0);
     if (bytesRead !== 16 || header.toString('binary') !== 'SQLite format 3\u0000') throw new Error('Restored SHAM database is not a valid SQLite database file.');
   } finally { await handle.close(); }
+  let database;
+  try {
+    const Database = require('better-sqlite3');
+    database = new Database(databasePath, { readonly: true, fileMustExist: true });
+    const quickCheck = database.pragma('quick_check', { simple: true });
+    if (quickCheck !== 'ok') throw new Error(`SQLite quick_check failed: ${String(quickCheck || 'unknown database error').slice(0, 500)}`);
+    for (const table of ['users', 'settings', 'sites']) {
+      if (!database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)) throw new Error(`Restored SHAM database is missing required table ${table}.`);
+    }
+  } catch (error) {
+    throw new Error(`Restored SHAM database failed integrity validation: ${error.message}`);
+  } finally { try { database?.close(); } catch {} }
   return entries;
 }
 

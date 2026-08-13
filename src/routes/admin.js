@@ -1,5 +1,7 @@
 'use strict';
 
+const { validateManifest } = require('../plugin-manager');
+
 function registerAdminRoutes(ctx) {
   const {
     app, requireAuth, requireAdmin, pluginManager, publicUser, multipart, pluginUpload, validatePluginArchiveFile,
@@ -14,6 +16,24 @@ function registerAdminRoutes(ctx) {
 app.get('/api/plugins', requireAuth, (req, res) => res.json({
     plugins: pluginManager.list()
   }));
+
+
+  app.post('/api/admin/plugins/playground/validate', requireAuth, requireAdmin, (req, res) => {
+    try {
+      const raw = req.body?.manifest;
+      let manifest = raw;
+      if (typeof raw === 'string') {
+        if (Buffer.byteLength(raw, 'utf8') > 128 * 1024) throw new Error('Playground manifest may not exceed 128 KB.');
+        try { manifest = JSON.parse(raw); } catch { throw new Error('Playground manifest must be valid JSON.'); }
+      } else {
+        let serialized = '';
+        try { serialized = JSON.stringify(raw); } catch { throw new Error('Playground manifest must be valid JSON data.'); }
+        if (Buffer.byteLength(serialized || '', 'utf8') > 128 * 1024) throw new Error('Playground manifest may not exceed 128 KB.');
+      }
+      const normalized = validateManifest(manifest);
+      res.json({ valid: true, manifest: normalized });
+    } catch (error) { res.status(400).json({ valid: false, error: error.message }); }
+  });
 
   app.get('/api/plugins/:id/client.js', requireAuth, async (req, res) => {
     try {
@@ -121,13 +141,21 @@ app.get('/api/plugins', requireAuth, (req, res) => res.json({
     try {
       const enabled = bool(req.body.enabled, false);
       const issuer = String(req.body.issuer || '').trim();
-      const clientId = String(req.body.clientId || '').trim().slice(0, 500);
+      const clientId = String(req.body.clientId || '').trim();
+      if (issuer.length > 2000 || /[\r\n\0]/.test(issuer)) throw new Error('OIDC issuer URL is invalid or too long.');
+      if (!clientId || clientId.length > 500 || /[\r\n\0]/.test(clientId)) {
+        if (enabled || clientId) throw new Error('OIDC client ID is invalid or too long.');
+      }
       const autoProvision = bool(req.body.autoProvision, false);
       const defaultRole = String(req.body.defaultRole || 'user') === 'admin' ? 'admin' : 'user';
       const normalizedIssuer = issuer ? normalizeOidcIssuer(issuer) : '';
       if (enabled && (!normalizedIssuer || !clientId)) throw new Error('OIDC issuer and client ID are required when SSO is enabled.');
       let clientSecret = getSecretSetting(db, 'oidc_client_secret', '');
-      if (typeof req.body.clientSecret === 'string' && req.body.clientSecret.trim()) clientSecret = req.body.clientSecret.trim();
+      if (typeof req.body.clientSecret === 'string' && req.body.clientSecret.trim()) {
+        const suppliedSecret = req.body.clientSecret.trim();
+        if (suppliedSecret.length > 8192 || /[\r\n\0]/.test(suppliedSecret)) throw new Error('OIDC client secret is invalid or too long.');
+        clientSecret = suppliedSecret;
+      }
       if (bool(req.body.clearClientSecret, false)) clientSecret = '';
       db.transaction(() => {
         setSetting('oidc_enabled', enabled ? '1' : '0');

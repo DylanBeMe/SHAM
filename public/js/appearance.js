@@ -1,7 +1,7 @@
 'use strict';
 
 function copyTheme(theme) {
-  return { name: theme.name, custom: { ...theme.custom } };
+  return { name: theme.name, mode: theme.mode || 'system', custom: { ...theme.custom } };
 }
 
 function populateThemeDialog() {
@@ -25,6 +25,12 @@ function updateThemePicker() {
     button.setAttribute('role', 'radio');
     button.tabIndex = active ? 0 : -1;
   });
+  $$('.theme-mode-option').forEach((button) => {
+    const active = button.dataset.themeMode === state.themeDraft.mode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-checked', String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
   $('#custom-theme-fields').hidden = state.themeDraft.name !== 'custom';
   updateThemeValidation();
 }
@@ -32,6 +38,27 @@ function updateThemePicker() {
 $('#theme-button').addEventListener('click', () => {
   populateThemeDialog();
   showModal($('#theme-dialog'));
+});
+
+$('.theme-mode-toggle').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-theme-mode]');
+  if (!button) return;
+  state.themeDraft.mode = button.dataset.themeMode;
+  updateThemePicker();
+});
+
+$('.theme-mode-toggle').addEventListener('keydown', (event) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const buttons = $$('.theme-mode-option');
+  const current = Math.max(0, buttons.indexOf(document.activeElement));
+  let next = current;
+  if (event.key === 'Home') next = 0;
+  else if (event.key === 'End') next = buttons.length - 1;
+  else next = (current + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length;
+  event.preventDefault();
+  state.themeDraft.mode = buttons[next].dataset.themeMode;
+  updateThemePicker();
+  buttons[next].focus();
 });
 
 $('.theme-presets').addEventListener('click', (event) => {
@@ -89,10 +116,11 @@ $('#theme-form').addEventListener('submit', (event) => {
   const persisted = window.SHAM_THEME.save(state.themeDraft);
   closeModal($('#theme-dialog'));
   const label = state.themeDraft.name === 'custom' ? 'Custom' : state.themeDraft.name[0].toUpperCase() + state.themeDraft.name.slice(1);
-  toast(persisted ? `${label} theme applied.` : `${label} theme applied for this session; browser storage is unavailable.`, persisted ? 'success' : 'warning');
+  const modeLabel = state.themeDraft.mode[0].toUpperCase() + state.themeDraft.mode.slice(1);
+  toast(persisted ? `${label} · ${modeLabel} applied.` : `${label} · ${modeLabel} applied for this session; browser storage is unavailable.`, persisted ? 'success' : 'warning');
 });
 $('#theme-reset').addEventListener('click', () => {
   const persisted = window.SHAM_THEME.reset();
   populateThemeDialog();
-  toast(persisted ? 'Theme reset to purple.' : 'Theme reset for this session; browser storage is unavailable.', persisted ? 'success' : 'warning');
+  toast(persisted ? 'Theme reset to Purple · System.' : 'Theme reset for this session; browser storage is unavailable.', persisted ? 'success' : 'warning');
 });

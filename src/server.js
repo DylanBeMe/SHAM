@@ -41,6 +41,7 @@ const {
 const { bool, validateSiteInput, safeRelativePath } = require('./validation');
 const { auditObfuscationCompatibility } = require('./obfuscation-audit');
 const { installUploadAsync, stopUploadWorkers, MAX_FILES } = require('./upload-utils');
+const SITE_FORM_FIELD_LIMIT = 192;
 const { CappedDiskStorage, cleanupUploadedFiles } = require('./upload-storage');
 const {
   listSiteFilesAsync,
@@ -132,8 +133,12 @@ const upload = multer({
   limits: {
     fileSize: UPLOAD_LIMIT_BYTES,
     files: MAX_FILES,
-    fields: 80,
-    parts: MAX_FILES + 80,
+    // The site wizard carries runtime, deployment, security, and monitoring
+    // configuration alongside uploaded files. Keep this bounded, but leave
+    // enough headroom for future settings so folder uploads do not trip
+    // Multer's field-count guard before file handling begins.
+    fields: SITE_FORM_FIELD_LIMIT,
+    parts: MAX_FILES + SITE_FORM_FIELD_LIMIT,
     fieldNameSize: 100,
     fieldNestingDepth: 0,
     fieldSize: Math.max(EDITOR_LIMIT_BYTES, 2 * 1024 * 1024)
@@ -831,7 +836,7 @@ app.post('/api/security/api-tokens', requireAuth, stepUpLimiter, async (req, res
   if (!scopes.length) return res.status(400).json({ error: 'Select at least one API token scope.' });
   if (scopes.includes('*') && scopes.length > 1) scopes.splice(0, scopes.length, '*');
   const expiresDays = Number(req.body.expiresDays || 0);
-  if (!Number.isFinite(expiresDays) || expiresDays < 0 || expiresDays > 3650) return res.status(400).json({ error: 'Token expiry must be between 0 and 3650 days.' });
+  if (!Number.isSafeInteger(expiresDays) || expiresDays < 0 || expiresDays > 3650) return res.status(400).json({ error: 'Token expiry must be between 0 and 3650 days.' });
   const token = `sham_pat_${crypto.randomBytes(32).toString('base64url')}`;
   const expiresAt = expiresDays > 0 ? new Date(Date.now() + expiresDays * 86400_000).toISOString() : null;
   const result = db.prepare('INSERT INTO api_tokens (user_id, name, token_hash, scopes_json, expires_at) VALUES (?, ?, ?, ?, ?)').run(req.user.id, name, tokenHash(token), JSON.stringify(scopes), expiresAt);
@@ -943,7 +948,12 @@ registerAdminRoutes(adminRouteContext);
 
 registerOperationsRoutes(operationsRouteContext);
 
-app.get('/LICENSE', (_req, res) => res.sendFile(path.join(ROOT_DIR, 'LICENSE')));
+app.get('/LICENSE', (_req, res) => {
+  res.type('text/plain').sendFile(path.join(ROOT_DIR, 'LICENSE'), (error) => {
+    if (!error || res.headersSent) return;
+    res.status(error.statusCode === 404 ? 404 : 500).type('text/plain').send('SHAM license file is unavailable in this installation.');
+  });
+});
 
 app.use('/api', (_req, res) => res.status(404).json({ error: 'API route not found.' }));
 app.use(express.static(publicDir, { index: 'index.html', maxAge: 0 }));
@@ -1022,7 +1032,7 @@ async function shutdown(signal) {
   });
   dashboardServer.closeIdleConnections?.();
 
-  cloudflareReconciler.stop();
+  await cloudflareReconciler.stop();
   await stopIntegrationProcesses();
   await Promise.allSettled([performanceMonitor.stop(), dependencyScanner.shutdown(), snapshotManager.shutdown(), operationsManager.shutdown(), updateManager.shutdown(), cloudflareTunnels.shutdown(), legacyCloudflareTunnel.shutdown(), edgeProxy.stop()]);
   await stopUploadWorkers();

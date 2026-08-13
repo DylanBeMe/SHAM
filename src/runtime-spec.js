@@ -85,9 +85,33 @@ function scalar(value) {
     return raw.slice(1, -1).replace(/''/g, "'");
   }
   if ((raw.startsWith('[') && raw.endsWith(']')) || (raw.startsWith('{') && raw.endsWith('}'))) {
-    try { return JSON.parse(raw.replace(/'/g, '"')); } catch { /* text */ }
+    try { return JSON.parse(raw); } catch { /* text */ }
   }
   return raw;
+}
+
+function stripYamlComment(sourceLine) {
+  let single = false;
+  let double = false;
+  let escaped = false;
+  for (let index = 0; index < sourceLine.length; index += 1) {
+    const char = sourceLine[index];
+    if (double) {
+      if (escaped) { escaped = false; continue; }
+      if (char === '\\') { escaped = true; continue; }
+      if (char === '"') double = false;
+      continue;
+    }
+    if (single) {
+      if (char === "'" && sourceLine[index + 1] === "'") { index += 1; continue; }
+      if (char === "'") single = false;
+      continue;
+    }
+    if (char === '"') { double = true; continue; }
+    if (char === "'") { single = true; continue; }
+    if (char === '#' && (index === 0 || /\s/.test(sourceLine[index - 1]))) return sourceLine.slice(0, index).trimEnd();
+  }
+  return sourceLine;
 }
 
 // A deliberately small YAML subset: nested mappings and scalar/JSON-style values.
@@ -99,7 +123,7 @@ function parseSimpleYaml(text) {
     if (!sourceLine.trim() || /^\s*#/.test(sourceLine)) continue;
     const leading = sourceLine.match(/^\s*/)?.[0] || '';
     if (leading.includes('\t')) throw new Error(`sham.yaml line ${index + 1} uses tabs; use spaces.`);
-    const line = sourceLine.replace(/\s+#.*$/, '');
+    const line = stripYamlComment(sourceLine);
     const indent = line.length - line.trimStart().length;
     const match = /^\s*([A-Za-z0-9_.-]+)\s*:\s*(.*)$/.exec(line);
     if (!match) throw new Error(`sham.yaml line ${index + 1} is outside the supported mapping subset.`);
@@ -178,7 +202,8 @@ function resolveRuntimeSpec(site, root, { manifestRecord = null } = {}) {
   const override = useManifest ? manifestOverrides(manifestRecord) : {};
   const legacyDockerNode = site.runtime_type === 'node' && site.runtime_isolation === 'docker' && !override.preset && (!site.runtime_preset || site.runtime_preset === 'node');
   const presetName = String(legacyDockerNode ? 'image' : (override.preset || site.runtime_preset || legacyPreset(site))).trim().toLowerCase();
-  const preset = RUNTIME_PRESETS[presetName] || RUNTIME_PRESETS.custom;
+  const preset = RUNTIME_PRESETS[presetName];
+  if (!preset) throw new Error(`Unknown runtime preset: ${presetName || '(empty)'}.`);
   const requestedDriver = String(override.driver || preset.driver).trim().toLowerCase();
   if (!['static', 'process', 'container', 'compose', 'proxy'].includes(requestedDriver)) throw new Error('Runtime driver must be static, process, container, compose, or proxy.');
   const legacyNode = site.runtime_type === 'node' ? `node ${JSON.stringify(String(site.node_entry || 'server.js'))}` : '';
@@ -196,19 +221,19 @@ function resolveRuntimeSpec(site, root, { manifestRecord = null } = {}) {
   const spec = {
     preset: presetName,
     driver: requestedDriver,
-    command: cleanRuntimeCommand(override.command ?? site.start_command ?? ((site.runtime_type === 'node' && presetName === 'node') ? legacyNode : (preset.command ?? legacyNode))),
+    command: cleanRuntimeCommand(override.command ?? ((site.runtime_type === 'node' && presetName === 'node') ? legacyNode : (site.start_command ?? preset.command ?? legacyNode))),
     workingDirectory: workingRaw === '.' ? '.' : safeRelative(workingRaw, 'Working directory'),
     portEnv: cleanEnvName(override.portEnv || site.runtime_port_env || preset.portEnv || 'PORT'),
     installCommand: cleanCommand(override.installCommand ?? site.install_command ?? '', 'Install command'),
     buildCommand: cleanCommand(override.buildCommand ?? site.build_command ?? '', 'Build command'),
-    buildOutputDir: String(override.buildOutputDir ?? site.build_output_dir ?? '').trim(),
+    buildOutputDir: (() => { const value = String(override.buildOutputDir ?? site.build_output_dir ?? '').trim(); return value ? safeRelative(value, 'Build output directory') : ''; })(),
     readiness: {
       type: readinessType,
       path: readinessPath,
       command: cleanRuntimeCommand(override.readinessCommand ?? site.readiness_command ?? '', 'Readiness command'),
       statusMin,
       statusMax,
-      timeoutMs: boundedNumber(override.startupTimeoutSeconds ?? site.startup_timeout_seconds, 30, 1, 900, 'Startup timeout') * 1000
+      timeoutMs: boundedNumber(override.startupTimeoutSeconds ?? site.startup_timeout_seconds, 30, 1, 600, 'Startup timeout') * 1000
     },
     shutdownGraceMs: boundedNumber(override.shutdownGraceSeconds ?? site.shutdown_grace_seconds, 10, 0, 300, 'Shutdown grace') * 1000,
     drainMs: boundedNumber(override.drainSeconds ?? site.blue_green_drain_seconds, 5, 0, 300, 'Blue/green drain') * 1000,
@@ -217,7 +242,7 @@ function resolveRuntimeSpec(site, root, { manifestRecord = null } = {}) {
       image: cleanImage(override.image || site.container_image || 'node:22-alpine'),
       port: containerPort,
       dockerfilePath: safeRelative(override.dockerfilePath || site.dockerfile_path || preset.dockerfilePath || 'Dockerfile', 'Dockerfile path'),
-      buildpackBuilder: String(override.buildpackBuilder || site.buildpack_builder || '').trim().slice(0, 300)
+      buildpackBuilder: (() => { const value = String(override.buildpackBuilder || site.buildpack_builder || '').trim(); return value ? cleanImage(value) : ''; })()
     },
     compose: {
       file: safeRelative(override.composeFile || site.compose_file || preset.composeFile || 'compose.yaml', 'Compose file'),

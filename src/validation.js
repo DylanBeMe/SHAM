@@ -266,7 +266,7 @@ function validateBuildOutput(value) {
 
 function validateRuntimePreset(value) {
   const preset = String(value || '').trim().toLowerCase();
-  const allowed = new Set(['', 'node', 'npm', 'bun', 'deno', 'fastapi', 'django', 'go', 'java', 'custom', 'image', 'dockerfile', 'buildpack', 'nixpacks', 'compose']);
+  const allowed = new Set(['', 'static', 'proxy', 'node', 'npm', 'bun', 'deno', 'fastapi', 'django', 'go', 'java', 'custom', 'image', 'dockerfile', 'buildpack', 'nixpacks', 'compose']);
   if (!allowed.has(preset)) throw new Error('Runtime preset is invalid.');
   return preset;
 }
@@ -303,7 +303,23 @@ function validateSiteInput(body, defaults = {}) {
 
   const runtimeType = String(body.runtimeType ?? body.runtime_type ?? defaults.runtime_type ?? 'static').toLowerCase();
   if (!['static', 'node', 'process', 'container', 'compose', 'proxy'].includes(runtimeType)) throw new Error('Runtime type must be static, node, process, container, compose, or proxy.');
-  const runtimePreset = validateRuntimePreset(body.runtimePreset ?? body.runtime_preset ?? defaults.runtime_preset ?? (runtimeType === 'node' ? 'node' : runtimeType === 'container' ? 'image' : ''));
+  const containerMode = (() => {
+    const mode = String(body.containerMode ?? body.container_mode ?? defaults.container_mode ?? 'image').toLowerCase();
+    if (!['image', 'dockerfile', 'buildpack', 'nixpacks'].includes(mode)) throw new Error('Container mode must be image, dockerfile, buildpack, or nixpacks.');
+    return mode;
+  })();
+  const requestedRuntimePreset = validateRuntimePreset(body.runtimePreset ?? body.runtime_preset ?? defaults.runtime_preset ?? '');
+  const processPresets = new Set(['node', 'npm', 'bun', 'deno', 'fastapi', 'django', 'go', 'java', 'custom']);
+  let runtimePreset;
+  if (runtimeType === 'static') runtimePreset = 'static';
+  else if (runtimeType === 'proxy') runtimePreset = 'proxy';
+  else if (runtimeType === 'node') runtimePreset = 'node';
+  else if (runtimeType === 'compose') runtimePreset = 'compose';
+  else if (runtimeType === 'container') runtimePreset = containerMode;
+  else {
+    runtimePreset = requestedRuntimePreset || 'custom';
+    if (!processPresets.has(runtimePreset)) throw new Error('Managed process runtime preset is invalid.');
+  }
   const securityPreset = String(body.securityPreset ?? body.security_preset ?? defaults.security_preset ?? 'balanced').toLowerCase();
   if (!['off', 'balanced', 'strict', 'custom'].includes(securityPreset)) throw new Error('Security-header preset must be off, balanced, strict, or custom.');
   const restartPolicy = String(body.restartPolicy ?? body.restart_policy ?? defaults.restart_policy ?? 'on-failure').toLowerCase();
@@ -346,7 +362,8 @@ function validateSiteInput(body, defaults = {}) {
   const healthMin = validateStatusCode(body.healthCheckStatusMin ?? body.health_check_status_min, 'Health-check minimum status', Number(defaults.health_check_status_min || 200));
   const healthMax = validateStatusCode(body.healthCheckStatusMax ?? body.health_check_status_max, 'Health-check maximum status', Number(defaults.health_check_status_max || 499));
   if (healthMin > healthMax) throw new Error('Health-check minimum status cannot exceed its maximum status.');
-  const startCommand = validateBuildCommand(body.startCommand ?? body.start_command ?? defaults.start_command ?? '', 'Start command');
+  const requestedStartCommand = validateBuildCommand(body.startCommand ?? body.start_command ?? defaults.start_command ?? '', 'Start command');
+  const startCommand = runtimeType === 'process' || (runtimeType === 'container' && containerMode === 'image') ? requestedStartCommand : '';
   const readinessType = validateRuntimeProbeType(body.readinessType ?? body.readiness_type ?? defaults.readiness_type ?? 'tcp', 'Readiness probe');
   const readinessCommand = validateBuildCommand(body.readinessCommand ?? body.readiness_command ?? defaults.readiness_command ?? '', 'Readiness command');
   const healthType = validateRuntimeProbeType(body.healthCheckType ?? body.health_check_type ?? defaults.health_check_type ?? 'http', 'Health check');
@@ -409,16 +426,12 @@ function validateSiteInput(body, defaults = {}) {
     edge_enabled: edgeEnabled,
     runtime_isolation: runtimeIsolation,
     container_image: validateContainerImage(body.containerImage ?? body.container_image ?? defaults.container_image ?? 'node:22-alpine'),
-    container_mode: (() => {
-      const mode = String(body.containerMode ?? body.container_mode ?? defaults.container_mode ?? 'image').toLowerCase();
-      if (!['image', 'dockerfile', 'buildpack', 'nixpacks'].includes(mode)) throw new Error('Container mode must be image, dockerfile, buildpack, or nixpacks.');
-      return mode;
-    })(),
+    container_mode: containerMode,
     container_port: boundedInteger(body.containerPort ?? body.container_port, 'Container port', Number(defaults.container_port || 3000), 1, 65535),
     dockerfile_path: safeRelativePath(body.dockerfilePath ?? body.dockerfile_path ?? defaults.dockerfile_path ?? 'Dockerfile', 'Dockerfile path'),
     compose_file: safeRelativePath(body.composeFile ?? body.compose_file ?? defaults.compose_file ?? 'compose.yaml', 'Compose file'),
     compose_service: validateComposeService(body.composeService ?? body.compose_service ?? defaults.compose_service ?? 'app'),
-    buildpack_builder: String(body.buildpackBuilder ?? body.buildpack_builder ?? defaults.buildpack_builder ?? '').trim().slice(0, 256),
+    buildpack_builder: (() => { const value = String(body.buildpackBuilder ?? body.buildpack_builder ?? defaults.buildpack_builder ?? '').trim(); if (value.length > 256 || /[\r\n\0]/.test(value)) throw new Error('Buildpack builder is invalid or too long.'); return value; })(),
     readiness_type: readinessType,
     readiness_path: validateHealthPath(body.readinessPath ?? body.readiness_path ?? defaults.readiness_path ?? '/'),
     readiness_command: readinessCommand,
@@ -429,7 +442,7 @@ function validateSiteInput(body, defaults = {}) {
     blue_green_drain_seconds: boundedInteger(body.blueGreenDrainSeconds ?? body.blue_green_drain_seconds, 'Blue/green drain period', Number(defaults.blue_green_drain_seconds ?? 5), 0, 300),
     manifest_enabled: bool(body.manifestEnabled ?? body.manifest_enabled, defaults.manifest_enabled === undefined ? true : Boolean(defaults.manifest_enabled)),
     cloudflare_auto_sync: bool(body.cloudflareAutoSync ?? body.cloudflare_auto_sync, Boolean(defaults.cloudflare_auto_sync)),
-    cpu_limit: Math.min(Math.max(Number(body.cpuLimit ?? body.cpu_limit ?? defaults.cpu_limit ?? 0) || 0, 0), 256),
+    cpu_limit: (() => { const value = Number(body.cpuLimit ?? body.cpu_limit ?? defaults.cpu_limit ?? 0); if (!Number.isFinite(value) || value < 0 || value > 256) throw new Error('CPU limit must be between 0 and 256.'); return value; })(),
     pids_limit: boundedInteger(body.pidsLimit ?? body.pids_limit, 'Container process limit', Number(defaults.pids_limit || 128), 16, 65535),
     outbound_network: bool(body.outboundNetwork ?? body.outbound_network, defaults.outbound_network === undefined ? true : Boolean(defaults.outbound_network)),
     anubis_enabled: anubisEnabled,

@@ -29,51 +29,150 @@ function ephemeralPort(host = '127.0.0.1') {
   });
 }
 
-function runTool(bin, args, { cwd, env, timeoutMs = 20 * 60_000, input = null, onLine = null } = {}) {
+function runTool(bin, args, { cwd, env, timeoutMs = 20 * 60_000, input = null, onLine = null, maxOutputBytes = 100_000, rejectOutputOverflow = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { cwd, env: { ...operatorEnvironment(), ...(env || {}) }, stdio: [input === null ? 'ignore' : 'pipe', 'pipe', 'pipe'], windowsHide: true });
     let stdout = '';
     let stderr = '';
-    lineLogger(child.stdout, (line) => { stdout = `${stdout}${line}\n`.slice(-100_000); onLine?.('info', line); });
-    lineLogger(child.stderr, (line) => { stderr = `${stderr}${line}\n`.slice(-100_000); onLine?.('error', line); });
-    if (input !== null) { child.stdin.end(input); }
     let settled = false;
+    let timer = null;
+    const appendOutput = (current, chunk, limit, label) => {
+      const text = chunk.toString();
+      if (Buffer.byteLength(current) + chunk.length <= limit) return current + text;
+      if (rejectOutputOverflow) {
+        try { child.kill('SIGKILL'); } catch { /* gone */ }
+        finish(new Error(`${bin} ${label} exceeded the ${Math.ceil(limit / 1024)} KiB capture limit.`));
+        return current;
+      }
+      const combined = current + text;
+      return Buffer.byteLength(combined) <= limit ? combined : Buffer.from(combined).subarray(-limit).toString('utf8');
+    };
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (error) reject(error); else resolve(value);
     };
-    const timer = setTimeout(() => {
+    child.stdout.on('data', (chunk) => { stdout = appendOutput(stdout, chunk, maxOutputBytes, 'stdout'); });
+    child.stderr.on('data', (chunk) => { stderr = appendOutput(stderr, chunk, 100_000, 'stderr'); });
+    if (onLine) {
+      lineLogger(child.stdout, (line) => onLine('info', line));
+      lineLogger(child.stderr, (line) => onLine('error', line));
+    }
+    if (input !== null) child.stdin.end(input);
+    timer = setTimeout(() => {
       try { child.kill('SIGKILL'); } catch { /* gone */ }
       finish(new Error(`${bin} timed out after ${Math.ceil(timeoutMs / 1000)} seconds.`));
     }, timeoutMs);
     timer.unref?.();
     child.once('error', (error) => finish(error));
     child.once('exit', (code, signal) => {
+      if (settled) return;
       if (code === 0) finish(null, { stdout: stdout.trim(), stderr: stderr.trim() });
       else finish(new Error(`${bin} exited ${code ?? signal ?? 'unexpectedly'}${stderr.trim() ? `: ${stderr.trim().slice(-2000)}` : ''}`));
     });
   });
 }
 
-function composeRuntimePolicy(config, serviceName) {
+function composePortBinding(port, expectedPort) {
+  if (port && typeof port === 'object') {
+    const target = Number(port.target || 0);
+    const host = String(port.host_ip ?? port.hostIp ?? '').trim();
+    const protocol = String(port.protocol || 'tcp').toLowerCase();
+    return { target, host, protocol, safe: target === Number(expectedPort) && protocol === 'tcp' && ['127.0.0.1', '::1'].includes(host) };
+  }
+  const value = String(port || '').trim().replace(/\/tcp$/i, '');
+  let host = '';
+  let remainder = '';
+  if (value.startsWith('127.0.0.1:')) { host = '127.0.0.1'; remainder = value.slice('127.0.0.1:'.length); }
+  else if (value.startsWith('[::1]:')) { host = '::1'; remainder = value.slice('[::1]:'.length); }
+  const parts = remainder.split(':');
+  const target = /^\d+$/.test(parts.at(-1) || '') ? Number(parts.at(-1)) : 0;
+  return { target, host, protocol: 'tcp', safe: target === Number(expectedPort) && Boolean(host) && parts.length <= 2 };
+}
+
+function assertComposePathInside(root, value, label) {
+  if (!value) return;
+  const raw = typeof value === 'object' ? (value.path || value.file || value.context || '') : value;
+  if (!raw || typeof raw !== 'string') return;
+  const resolved = path.resolve(root, raw);
+  const baseRoot = path.resolve(root);
+  const base = `${baseRoot}${path.sep}`;
+  if (resolved !== baseRoot && !resolved.startsWith(base)) throw new Error(`${label} must stay inside the site project.`);
+}
+
+function validateComposeProjectPaths(config, root) {
+  const services = config?.services || {};
+  if (Object.keys(services).length > 64) throw new Error('Compose projects may contain at most 64 services.');
+  if (Object.keys(config?.networks || {}).length > 128 || Object.keys(config?.volumes || {}).length > 128) throw new Error('Compose projects declare too many networks or volumes.');
+  for (const [name, service] of Object.entries(services)) {
+    const prefix = `Compose service ${name}`;
+    if (service?.container_name) throw new Error(`${prefix} cannot set container_name because SHAM must isolate project instances.`);
+    const build = service?.build;
+    if (typeof build === 'string') assertComposePathInside(root, build, `${prefix} build context`);
+    else if (build && typeof build === 'object') {
+      const context = String(build.context || '.');
+      assertComposePathInside(root, context, `${prefix} build context`);
+      if (build.dockerfile) {
+        const dockerfile = String(build.dockerfile);
+        const dockerfilePath = path.isAbsolute(dockerfile) ? dockerfile : path.resolve(root, context, dockerfile);
+        assertComposePathInside(root, dockerfilePath, `${prefix} Dockerfile`);
+      }
+    }
+    const envFiles = Array.isArray(service?.env_file) ? service.env_file : service?.env_file ? [service.env_file] : [];
+    for (const envFile of envFiles) assertComposePathInside(root, envFile, `${prefix} env_file`);
+    if (service?.credential_spec?.file) assertComposePathInside(root, service.credential_spec.file, `${prefix} credential spec`);
+  }
+  for (const [kind, entries] of [
+    ['network', config?.networks || {}], ['volume', config?.volumes || {}], ['config', config?.configs || {}], ['secret', config?.secrets || {}]
+  ]) {
+    for (const [name, definition] of Object.entries(entries)) {
+      if (definition?.external) throw new Error(`Compose ${kind} ${name} cannot be external; SHAM-managed projects must not attach unmanaged Docker resources.`);
+      if ((kind === 'config' || kind === 'secret') && definition?.file) assertComposePathInside(root, definition.file, `Compose ${kind} ${name}`);
+    }
+  }
+}
+
+function composeRuntimePolicy(config, serviceName, { containerPort = null, requirePublishedPort = false } = {}) {
   const services = config?.services || {};
   const selected = services[serviceName];
   if (!selected) throw new Error(`Compose service ${serviceName} was not found.`);
   for (const [name, service] of Object.entries(services)) {
     const prefix = `Compose service ${name}`;
     if (service?.privileged) throw new Error(`${prefix} cannot run privileged.`);
-    if (String(service?.network_mode || '').toLowerCase() === 'host') throw new Error(`${prefix} cannot use host networking.`);
-    if (String(service?.pid || '').toLowerCase() === 'host' || String(service?.ipc || '').toLowerCase() === 'host') throw new Error(`${prefix} cannot use host PID/IPC namespaces.`);
+    const networkMode = String(service?.network_mode || '').trim().toLowerCase();
+    if (networkMode) throw new Error(`${prefix} cannot override its network namespace.`);
+    for (const [field, value] of [['PID', service?.pid], ['IPC', service?.ipc], ['UTS', service?.uts], ['user namespace', service?.userns_mode], ['cgroup namespace', service?.cgroup]]) {
+      const normalized = String(value || '').trim().toLowerCase();
+      if (normalized === 'host' || normalized.startsWith('container:')) throw new Error(`${prefix} cannot join the host or another container’s ${field}.`);
+    }
     if (Array.isArray(service?.cap_add) && service.cap_add.length) throw new Error(`${prefix} cannot add Linux capabilities.`);
     if (Array.isArray(service?.devices) && service.devices.length) throw new Error(`${prefix} cannot access host devices.`);
+    if (Array.isArray(service?.volumes_from) && service.volumes_from.length) throw new Error(`${prefix} cannot inherit volumes from another container.`);
+    if (Array.isArray(service?.extra_hosts) && service.extra_hosts.some((entry) => /host-gateway/i.test(String(entry)))) throw new Error(`${prefix} cannot map the Docker host gateway.`);
+    for (const option of Array.isArray(service?.security_opt) ? service.security_opt : []) {
+      if (/unconfined|label\s*[:=]\s*disable/i.test(String(option))) throw new Error(`${prefix} cannot disable container security profiles.`);
+    }
+    if (String(service?.build?.network || '').trim().toLowerCase() === 'host') throw new Error(`${prefix} cannot use host networking while building.`);
+    if (Array.isArray(service?.build?.entitlements) && service.build.entitlements.length) throw new Error(`${prefix} cannot request privileged build entitlements.`);
     for (const volume of service?.volumes || []) {
       const source = typeof volume === 'string' ? volume.split(':')[0] : volume?.source;
-      const type = typeof volume === 'object' ? volume?.type : (String(source || '').startsWith('/') ? 'bind' : 'volume');
-      if (type === 'bind' && path.isAbsolute(String(source || ''))) throw new Error(`${prefix} cannot use absolute host bind mounts. Use named volumes or project-relative paths.`);
+      const type = typeof volume === 'object' ? String(volume?.type || '') : (/^(?:\.?\.?\/|\/|[A-Za-z]:[\\/])/.test(String(source || '')) ? 'bind' : 'volume');
+      if (type === 'bind') throw new Error(`${prefix} cannot use host bind mounts. Use named volumes instead.`);
       if (String(source || '').includes('docker.sock')) throw new Error(`${prefix} cannot mount the Docker socket.`);
     }
+    const ports = Array.isArray(service?.ports) ? service.ports : [];
+    if (name !== serviceName && ports.length) throw new Error(`${prefix} cannot publish host ports; auxiliary services must stay on the Compose network.`);
+    if (name === serviceName && ports.length) {
+      if (containerPort == null) throw new Error(`${prefix} has an unexpected published port.`);
+      for (const port of ports) {
+        const binding = composePortBinding(port, containerPort);
+        if (!binding.safe) throw new Error(`${prefix} may only publish TCP container port ${containerPort} on 127.0.0.1 or ::1.`);
+      }
+    }
+  }
+  if (requirePublishedPort && !(Array.isArray(selected.ports) && selected.ports.length)) {
+    throw new Error(`Compose service ${serviceName} must publish container port ${containerPort} to loopback (for example 127.0.0.1::${containerPort}).`);
   }
   return selected;
 }
@@ -104,7 +203,7 @@ class SiteManager extends DeliverySiteManager {
     const tag = `sham/site-${site.id}:${suffix}`.toLowerCase();
     const log = (level, line) => this.log(site.id, level, `build: ${line}`);
     if (site.runtime_type === 'node' && site.runtime_isolation === 'docker') {
-      const image = String(site.container_image || 'node:22-alpine');
+      const image = spec.container.image;
       const entry = String(site.node_entry || 'server.js').replaceAll('\\', '/');
       const install = site.install_dependencies
         ? 'RUN if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then npm ci --omit=dev; elif [ -f package.json ]; then npm install --omit=dev; fi\n'
@@ -138,7 +237,7 @@ class SiteManager extends DeliverySiteManager {
     const cwd = spec.workingDirectory === '.' ? root : path.join(root, ...spec.workingDirectory.split('/'));
     const stat = await fs.promises.stat(cwd).catch(() => null);
     if (!stat?.isDirectory()) throw new Error(`Runtime working directory is missing: ${spec.workingDirectory}`);
-    if (site.runtime_type === 'node' && !site.start_command && site.install_dependencies && !options.preview) await this.ensureDependencies(site);
+    if (site.runtime_type === 'node' && spec.preset === 'node' && site.runtime_isolation !== 'docker' && site.install_dependencies && !options.preview) await this.ensureDependencies(site);
 
     let lastError;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -169,17 +268,20 @@ class SiteManager extends DeliverySiteManager {
   async launchContainerBackend(site, spec, root, options = {}) {
     const suffix = `${options.preview ? 'preview' : 'run'}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     const name = managedContainerName(site.id, suffix);
-    const image = await this.buildContainerImage(site, spec, root, suffix);
+    const managedImage = (site.runtime_type === 'node' && site.runtime_isolation === 'docker') || spec.container.mode !== 'image';
+    let image = '';
     const dataDir = path.join(SITE_DATA_DIR, String(site.id));
     await fs.promises.mkdir(dataDir, { recursive: true });
     const containerizedControlPlane = fs.existsSync('/.dockerenv');
     const env = this.runtimeEnvironment(site, spec, spec.container.port, '0.0.0.0', options.preview ? { SHAM_PREVIEW: '1' } : {});
     const args = ['run', '-d', '--name', name, '--label', 'sham.managed=true', '--label', `sham.site_id=${site.id}`, '--init', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true', '--read-only', '--pids-limit', String(site.pids_limit || 128), '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m'];
-    const rootMount = process.env.SHAM_DOCKER_HOST_DATA_PATH ? dockerHostDataPath(root) : root;
-    const dataMount = process.env.SHAM_DOCKER_HOST_DATA_PATH ? path.join(path.resolve(process.env.SHAM_DOCKER_HOST_DATA_PATH), 'site-data', String(site.id)) : dataDir;
-    if (containerizedControlPlane && !process.env.SHAM_DOCKER_HOST_DATA_PATH && spec.container.mode === 'image' && !(site.runtime_type === 'node' && site.runtime_isolation === 'docker')) throw new Error('Image runtimes that mount project source require SHAM_DOCKER_HOST_DATA_PATH when SHAM itself runs in Docker.');
-    if (spec.container.mode === 'image' && !(site.runtime_type === 'node' && site.runtime_isolation === 'docker')) args.push('-v', `${rootMount}:/app:ro`, '-w', spec.workingDirectory === '.' ? '/app' : `/app/${spec.workingDirectory}`);
-    args.push('-v', `${dataMount}:/data:rw`);
+    const dataMount = process.env.SHAM_DOCKER_HOST_DATA_PATH
+      ? path.join(path.resolve(process.env.SHAM_DOCKER_HOST_DATA_PATH), 'site-data', String(site.id))
+      : dataDir;
+    // Existing images are self-contained OCI artifacts. Do not bind SHAM's
+    // project tree over the image WORKDIR, which would hide files in the image.
+    if (containerizedControlPlane && !process.env.SHAM_DOCKER_HOST_DATA_PATH) args.push('-v', `sham-site-${site.id}-data:/data:rw`);
+    else args.push('-v', `${dataMount}:/data:rw`);
     let internalHost = '127.0.0.1';
     let internalPort = spec.container.port;
     if (containerizedControlPlane) {
@@ -194,69 +296,114 @@ class SiteManager extends DeliverySiteManager {
     if (site.memory_limit_mb > 0) args.push('--memory', `${site.memory_limit_mb}m`);
     if (site.cpu_limit > 0) args.push('--cpus', String(site.cpu_limit));
     for (const key of Object.keys(env)) if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) args.push('-e', key);
-    args.push(image);
-    if (spec.container.mode === 'image' && spec.command && !(site.runtime_type === 'node' && site.runtime_isolation === 'docker')) {
-      if (Array.isArray(spec.command)) args.push(...spec.command);
-      else args.push('/bin/sh', '-lc', spec.command);
-    }
-    const result = await runTool(DOCKER_BIN, args, { env, timeoutMs: 120_000, onLine: (level, line) => this.log(site.id, level, `docker: ${line}`) });
-    const containerId = result.stdout.split(/\s+/).at(-1) || name;
-    if (!containerizedControlPlane) internalPort = await dockerPort(name, spec.container.port);
-    const logs = spawn(DOCKER_BIN, ['logs', '-f', name], { env: operatorEnvironment(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    lineLogger(logs.stdout, (line) => this.log(site.id, 'info', `container: ${line}`));
-    lineLogger(logs.stderr, (line) => this.log(site.id, 'error', `container: ${line}`));
-    const backend = { driver: 'container', containerName: name, containerId, logChild: logs, internalHost, internalPort, target: `http://${hostForUrl(internalHost)}:${internalPort}`, cwd: root, env, spec, root, active: false, stopping: false, site };
-    this.bindDockerBackendExit(site, backend, name);
+
+    let containerStarted = false;
+    let backend = null;
     try {
+      image = await this.buildContainerImage(site, spec, root, suffix);
+      args.push(image);
+      if (spec.container.mode === 'image' && spec.command && !(site.runtime_type === 'node' && site.runtime_isolation === 'docker')) {
+        if (Array.isArray(spec.command)) args.push(...spec.command);
+        else args.push('/bin/sh', '-lc', spec.command);
+      }
+      const result = await runTool(DOCKER_BIN, args, { env, timeoutMs: 120_000, onLine: (level, line) => this.log(site.id, level, `docker: ${line}`) });
+      containerStarted = true;
+      const containerId = result.stdout.split(/\s+/).at(-1) || name;
+      if (!containerizedControlPlane) internalPort = await dockerPort(name, spec.container.port);
+      const logs = spawn(DOCKER_BIN, ['logs', '-f', name], { env: operatorEnvironment(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+      logs.once('error', (error) => { if (!backend?.stopping) this.log(site.id, 'error', `Could not follow container logs: ${error.message}`); });
+      lineLogger(logs.stdout, (line) => this.log(site.id, 'info', `container: ${line}`));
+      lineLogger(logs.stderr, (line) => this.log(site.id, 'error', `container: ${line}`));
+      backend = { driver: 'container', containerName: name, containerId, managedImage: managedImage ? image : null, logChild: logs, internalHost, internalPort, target: `http://${hostForUrl(internalHost)}:${internalPort}`, cwd: root, env, spec, root, active: false, stopping: false, site };
+      this.bindDockerBackendExit(site, backend, name);
       await this.waitBackendReadiness(site, backend, spec);
       return backend;
     } catch (error) {
-      await this.stopBackend(backend).catch(() => {});
+      if (backend) await this.stopBackend(backend).catch(() => {});
+      else {
+        if (containerStarted) await runTool(DOCKER_BIN, ['rm', '-f', name], { timeoutMs: 30_000 }).catch(() => {});
+        if (managedImage && image) await runTool(DOCKER_BIN, ['image', 'rm', '-f', image], { timeoutMs: 60_000 }).catch(() => {});
+      }
       throw error;
     }
   }
 
-  async composeConfig(spec, root, { preview = false } = {}) {
+  async composeConfig(site, spec, root, { preview = false } = {}) {
     const file = path.join(root, ...spec.compose.file.split('/'));
     if (!realFileInside(root, file)) throw new Error(`Compose file is missing or unsafe: ${spec.compose.file}`);
-    const result = await runTool(DOCKER_BIN, ['compose', '-f', file, 'config', '--format', 'json'], { cwd: root, timeoutMs: 30_000 });
+    const containerizedControlPlane = fs.existsSync('/.dockerenv');
+    const env = this.runtimeEnvironment(site, spec, spec.compose.port, '0.0.0.0', preview ? { SHAM_PREVIEW: '1' } : {});
+    const result = await runTool(DOCKER_BIN, ['compose', '-f', file, 'config', '--format', 'json'], { cwd: root, env, timeoutMs: 30_000, maxOutputBytes: 2 * 1024 * 1024, rejectOutputOverflow: true });
     let config;
     try { config = JSON.parse(result.stdout); } catch { throw new Error('Docker Compose did not return a valid normalized configuration.'); }
-    for (const name of Object.keys(config?.services || {})) composeRuntimePolicy(config, name);
-    const service = composeRuntimePolicy(config, spec.compose.service);
-    if (preview) {
-      for (const [name, item] of Object.entries(config?.services || {})) {
-        const ports = Array.isArray(item.ports) ? item.ports : [];
-        if (name !== spec.compose.service && ports.length) throw new Error(`Compose preview cannot start because service ${name} publishes a host port. Remove auxiliary published ports or use a Dockerfile preview.`);
+    validateComposeProjectPaths(config, root);
+    composeRuntimePolicy(config, spec.compose.service, { containerPort: spec.compose.port, requirePublishedPort: false });
+    if (!site.outbound_network) {
+      for (const [name, network] of Object.entries(config?.networks || {})) {
+        if (network?.external) throw new Error(`Compose network ${name} is external; disable egress requires SHAM-managed internal project networks.`);
       }
-      const selectedPorts = Array.isArray(service.ports) ? service.ports : [];
-      if (!selectedPorts.length) throw new Error(`Compose preview requires service ${spec.compose.service} to publish port ${spec.compose.port} to loopback.`);
     }
-    return { file, config };
+    return { file, config, env, containerizedControlPlane };
   }
 
   async launchComposeBackend(site, spec, root, options = {}) {
-    const { file } = await this.composeConfig(spec, root, { preview: Boolean(options.preview) });
+    const { file, config, env, containerizedControlPlane } = await this.composeConfig(site, spec, root, { preview: Boolean(options.preview) });
     const suffix = `${options.preview ? 'preview' : 'run'}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     const project = `sham-${site.id}-${suffix}`.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 120);
-    const env = this.runtimeEnvironment(site, spec, spec.compose.port, '0.0.0.0', options.preview ? { SHAM_PREVIEW: '1' } : {});
-    await runTool(DOCKER_BIN, ['compose', '-p', project, '-f', file, 'up', '-d', '--build', spec.compose.service], { cwd: root, env, onLine: (level, line) => this.log(site.id, level, `compose: ${line}`) });
-    const container = await runTool(DOCKER_BIN, ['compose', '-p', project, '-f', file, 'ps', '-q', spec.compose.service], { cwd: root, env, timeoutMs: 30_000 });
-    const containerId = container.stdout.trim();
-    if (!containerId) throw new Error(`Compose service ${spec.compose.service} did not create a container.`);
-    const published = await runTool(DOCKER_BIN, ['compose', '-p', project, '-f', file, 'port', spec.compose.service, String(spec.compose.port)], { cwd: root, env, timeoutMs: 30_000 }).catch(() => ({ stdout: '' }));
-    const match = /:(\d+)\s*$/.exec(published.stdout.trim());
-    if (!match) {
-      await runTool(DOCKER_BIN, ['compose', '-p', project, '-f', file, 'down', '--remove-orphans'], { cwd: root, env, timeoutMs: 60_000 }).catch(() => {});
-      throw new Error(`Compose service ${spec.compose.service} must publish container port ${spec.compose.port}; use a loopback host binding such as 127.0.0.1::${spec.compose.port}.`);
+    const composeFiles = [file];
+    let networkOverride = '';
+    const runtimeOverride = { services: {}, networks: {} };
+    if (!site.outbound_network) {
+      const networkNames = Object.keys(config?.networks || {});
+      if (!networkNames.length) networkNames.push('default');
+      runtimeOverride.networks = Object.fromEntries(networkNames.map((name) => [name, { internal: true }]));
     }
-    const internalPort = Number(match[1]);
-    const backend = { driver: 'compose', composeProject: project, composeFile: file, composeService: spec.compose.service, containerId, internalHost: '127.0.0.1', internalPort, target: `http://127.0.0.1:${internalPort}`, cwd: root, env, spec, root, active: false, stopping: false, site };
-    this.bindDockerBackendExit(site, backend, containerId);
+    const selectedService = config?.services?.[spec.compose.service] || {};
+    if (!containerizedControlPlane && !(Array.isArray(selectedService.ports) && selectedService.ports.length)) {
+      runtimeOverride.services[spec.compose.service] = { ports: [`127.0.0.1::${spec.compose.port}`] };
+    }
+    if (Object.keys(runtimeOverride.services).length || Object.keys(runtimeOverride.networks).length) {
+      const overrideDir = path.join(SITE_DATA_DIR, String(site.id));
+      await fs.promises.mkdir(overrideDir, { recursive: true, mode: 0o700 });
+      networkOverride = path.join(overrideDir, `compose-runtime-${suffix}.json`);
+      await fs.promises.writeFile(networkOverride, `${JSON.stringify(runtimeOverride)}
+`, { mode: 0o600, flag: 'wx' });
+      composeFiles.push(networkOverride);
+    }
+    const fileArgs = composeFiles.flatMap((composeFile) => ['-f', composeFile]);
+    let started = false;
+    let backend = null;
     try {
+      await runTool(DOCKER_BIN, ['compose', '-p', project, ...fileArgs, 'up', '-d', '--build', spec.compose.service], { cwd: root, env, onLine: (level, line) => this.log(site.id, level, `compose: ${line}`) });
+      started = true;
+      const container = await runTool(DOCKER_BIN, ['compose', '-p', project, ...fileArgs, 'ps', '-q', spec.compose.service], { cwd: root, env, timeoutMs: 30_000 });
+      const containerId = container.stdout.trim();
+      if (!containerId) throw new Error(`Compose service ${spec.compose.service} did not create a container.`);
+
+      let internalHost = '127.0.0.1';
+      let internalPort = spec.compose.port;
+      if (containerizedControlPlane) {
+        const network = site.outbound_network ? DOCKER_EGRESS_NETWORK : DOCKER_INTERNAL_NETWORK;
+        if (!network) throw new Error(`Compose runtimes require ${site.outbound_network ? 'SHAM_DOCKER_EGRESS_NETWORK' : 'SHAM_DOCKER_INTERNAL_NETWORK'} when SHAM runs in Docker.`);
+        const alias = `sham-compose-${site.id}-${suffix}`.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 120);
+        await runTool(DOCKER_BIN, ['network', 'connect', '--alias', alias, network, containerId], { timeoutMs: 30_000 });
+        internalHost = alias;
+      } else {
+        const published = await runTool(DOCKER_BIN, ['compose', '-p', project, ...fileArgs, 'port', spec.compose.service, String(spec.compose.port)], { cwd: root, env, timeoutMs: 30_000 });
+        const match = /:(\d+)\s*$/.exec(published.stdout.trim());
+        if (!match) throw new Error(`Compose service ${spec.compose.service} did not publish container port ${spec.compose.port} to loopback.`);
+        internalPort = Number(match[1]);
+      }
+      backend = { driver: 'compose', composeProject: project, composeFile: file, composeFiles, networkOverride, composeService: spec.compose.service, containerId, internalHost, internalPort, target: `http://${hostForUrl(internalHost)}:${internalPort}`, cwd: root, env, spec, root, active: false, stopping: false, site };
+      this.bindDockerBackendExit(site, backend, containerId);
       await this.waitBackendReadiness(site, backend, spec);
       return backend;
-    } catch (error) { await this.stopBackend(backend).catch(() => {}); throw error; }
+    } catch (error) {
+      if (backend) await this.stopBackend(backend).catch(() => {});
+      else if (started) await runTool(DOCKER_BIN, ['compose', '-p', project, ...fileArgs, 'down', '--remove-orphans'], { cwd: root, env, timeoutMs: 60_000 }).catch(() => {});
+      if (networkOverride) await fs.promises.rm(networkOverride, { force: true }).catch(() => {});
+      throw error;
+    }
   }
 
   async launchBackend(site, root, options = {}) {
@@ -297,8 +444,11 @@ class SiteManager extends DeliverySiteManager {
     for (const socket of runtime.webSockets || []) socket.destroy();
     closeServer(runtime.server).catch(() => {});
     this.running.delete(site.id);
-    this.db.prepare("UPDATE runtime_instances SET observed_state = 'exited', updated_at = CURRENT_TIMESTAMP WHERE site_id = ?").run(site.id);
-    if (site.restart_policy === 'always' || (site.restart_policy === 'on-failure' && code !== 0)) this.scheduleRestart(site, message).catch(() => {});
+    try { this.db.prepare("UPDATE runtime_instances SET observed_state = 'exited', updated_at = CURRENT_TIMESTAMP WHERE site_id = ?").run(site.id); }
+    catch (error) { this.log(site.id, 'error', `Could not persist exited runtime state: ${error.message}`); }
+    if (site.restart_policy === 'always' || (site.restart_policy === 'on-failure' && code !== 0)) {
+      this.scheduleRestart(site, message).catch((error) => this.log(site.id, 'error', `Automatic restart failed: ${error.message}`));
+    }
   }
 
   bindBackendExit(site, backend) {
@@ -313,6 +463,9 @@ class SiteManager extends DeliverySiteManager {
     backend.waitChild = waiter;
     let output = '';
     waiter.stdout.on('data', (chunk) => { output = `${output}${chunk}`.slice(-64); });
+    waiter.once('error', (error) => {
+      if (!backend.stopping) this.log(site.id, 'error', `Could not monitor Docker runtime exit: ${error.message}`);
+    });
     waiter.once('exit', (waitCode) => {
       if (waitCode !== 0 || backend.stopping) return;
       const code = Number.parseInt(output.trim().split(/\s+/).at(-1), 10);
@@ -396,7 +549,9 @@ class SiteManager extends DeliverySiteManager {
       candidate.backend = backend;
     }
     if (backend.driver === 'compose' && actualRoot && actualRoot !== backend.root) {
-      backend = { ...backend, root: actualRoot, cwd: actualRoot, composeFile: path.join(actualRoot, ...backend.spec.compose.file.split('/')) };
+      const composeFile = path.join(actualRoot, ...backend.spec.compose.file.split('/'));
+      const composeFiles = (backend.composeFiles || [backend.composeFile]).map((file) => file === backend.composeFile ? composeFile : file);
+      backend = { ...backend, root: actualRoot, cwd: actualRoot, composeFile, composeFiles };
       candidate.backend = backend;
     } else if (backend.driver === 'process' && actualRoot && actualRoot !== backend.root) {
       const cwd = backend.spec.workingDirectory === '.' ? actualRoot : path.join(actualRoot, ...backend.spec.workingDirectory.split('/'));
@@ -410,33 +565,62 @@ class SiteManager extends DeliverySiteManager {
       await this.stopBackend(backend).catch(() => {});
       throw new Error('Prepared runtime exited before it could receive traffic.');
     }
+
     let runtime = this.running.get(site.id);
     const old = runtime?.backend || null;
-    if (!runtime) {
-      runtime = this.createGateway(site, backend);
-      await listen(runtime.server, site.port, site.bind_host);
-      this.running.set(site.id, runtime);
-      try { await this.operations?.afterSiteStart(site, runtime); }
-      catch (error) { this.running.delete(site.id); await closeServer(runtime.server); runtime.proxy.close(); await this.stopBackend(backend); throw new Error(`Site started but its protection layer failed: ${error.message}`); }
-    } else {
-      runtime.site = site;
+    const oldSite = runtime?.site || null;
+    const createdGateway = !runtime;
+    candidate.previousBackend = old && old !== backend ? old : null;
+
+    try {
+      if (!runtime) {
+        runtime = this.createGateway(site, backend);
+        await listen(runtime.server, site.port, site.bind_host);
+        this.running.set(site.id, runtime);
+        try { await this.operations?.afterSiteStart(site, runtime); }
+        catch (error) { throw new Error(`Site started but its protection layer failed: ${error.message}`); }
+      } else {
+        runtime.site = site;
+        runtime.backend = backend;
+      }
+
+      backend.active = true;
       runtime.backend = backend;
+      runtime.child = backend.child || null;
+      runtime.internalPort = backend.internalPort || null;
+      runtime.internalHost = backend.internalHost || null;
+      runtime.isolation = backend.driver;
+      runtime.type = backend.driver;
+      if (old && old !== backend) old.active = false;
+
+      // Persistence is part of promotion. If this fails, the catch below restores the
+      // previous runtime (or removes a newly-created gateway) before the error escapes.
+      this.persistRuntime(site, backend);
+      this.errors.delete(site.id);
+      this.healthState.set(site.id, { status: 'starting', lastCheckAt: null, latencyMs: null, failures: 0, message: null });
+    } catch (error) {
+      backend.active = false;
+      if (old && runtime) {
+        old.active = true;
+        runtime.site = oldSite || site;
+        runtime.backend = old;
+        runtime.child = old.child || null;
+        runtime.internalPort = old.internalPort || null;
+        runtime.internalHost = old.internalHost || null;
+        runtime.isolation = old.driver;
+        runtime.type = old.driver;
+      } else if (createdGateway && runtime) {
+        await this.operations?.beforeSiteStop(site, runtime).catch((cleanupError) => this.log(site.id, 'error', `Protection rollback failed: ${cleanupError.message}`));
+        this.running.delete(site.id);
+        await closeServer(runtime.server).catch(() => {});
+        runtime.proxy?.close();
+      }
+      candidate.previousBackend = null;
+      await this.stopBackend(backend).catch((cleanupError) => this.log(site.id, 'error', `Candidate cleanup failed after promotion error: ${cleanupError.message}`));
+      throw error;
     }
-    backend.active = true;
-    runtime.backend = backend;
-    runtime.child = backend.child || null;
-    runtime.internalPort = backend.internalPort || null;
-    runtime.internalHost = backend.internalHost || null;
-    runtime.isolation = backend.driver;
-    runtime.type = backend.driver;
-    if (old && old !== backend) old.active = false;
-    this.persistRuntime(site, backend);
-    this.errors.delete(site.id);
-    this.healthState.set(site.id, { status: 'starting', lastCheckAt: null, latencyMs: null, failures: 0, message: null });
-    if (old && old !== backend) {
-      candidate.previousBackend = old;
-      if (!deferCleanup) await this.finalizePromotion(candidate);
-    }
+
+    if (candidate.previousBackend && !deferCleanup) await this.finalizePromotion(candidate);
     return runtime;
   }
 
@@ -454,9 +638,29 @@ class SiteManager extends DeliverySiteManager {
     const site = typeof siteOrId === 'object' ? siteOrId : this.getSite(siteOrId);
     const runtime = site && this.running.get(site.id);
     const old = candidate?.previousBackend;
-    if (!runtime || runtime.backend !== candidate?.backend || !old) return false;
+    if (!runtime || runtime.backend !== candidate?.backend) return false;
     candidate.previousBackend = null;
     candidate.backend.active = false;
+
+    // A candidate can be promoted when the site had no previous running backend. If a
+    // later release-metadata transaction fails, there is nothing to switch traffic back
+    // to; tear down the newly-created gateway instead of leaving it serving a release
+    // whose activation is being rolled back.
+    if (!old) {
+      let persistenceError = null;
+      await this.operations?.beforeSiteStop(site, runtime).catch((error) => this.log(site.id, 'error', `Protection rollback failed: ${error.message}`));
+      for (const socket of runtime.webSockets || []) socket.destroy();
+      this.running.delete(site.id);
+      await closeServer(runtime.server).catch((error) => this.log(site.id, 'error', `Gateway cleanup failed during rollback: ${error.message}`));
+      runtime.proxy?.close();
+      try { this.db.prepare('DELETE FROM runtime_instances WHERE site_id = ?').run(site.id); }
+      catch (error) { persistenceError = error; }
+      await this.stopBackend(candidate.backend).catch((error) => this.log(site.id, 'error', `Candidate cleanup failed during rollback: ${error.message}`));
+      this.healthState.set(site.id, { status: 'stopped', lastCheckAt: new Date().toISOString(), latencyMs: null, failures: 0, message: null });
+      if (persistenceError) throw persistenceError;
+      return true;
+    }
+
     old.active = true;
     runtime.backend = old;
     runtime.child = old.child || null;
@@ -464,8 +668,11 @@ class SiteManager extends DeliverySiteManager {
     runtime.internalHost = old.internalHost || null;
     runtime.isolation = old.driver;
     runtime.type = old.driver;
-    this.persistRuntime(site, old);
-    await this.stopBackend(candidate.backend).catch(() => {});
+    let persistenceError = null;
+    try { this.persistRuntime(site, old); }
+    catch (error) { persistenceError = error; }
+    await this.stopBackend(candidate.backend).catch((error) => this.log(site.id, 'error', `Candidate cleanup failed during rollback: ${error.message}`));
+    if (persistenceError) throw persistenceError;
     return true;
   }
 
@@ -484,10 +691,12 @@ class SiteManager extends DeliverySiteManager {
       try { backend.waitChild?.kill(); } catch { /* ignore */ }
       await runTool(DOCKER_BIN, ['stop', '--time', String(Math.ceil(grace / 1000)), backend.containerName], { timeoutMs: grace + 10_000 }).catch(() => {});
       await runTool(DOCKER_BIN, ['rm', '-f', backend.containerName], { timeoutMs: 30_000 }).catch(() => {});
+      if (backend.managedImage) await runTool(DOCKER_BIN, ['image', 'rm', '-f', backend.managedImage], { timeoutMs: 60_000 }).catch(() => {});
     }
     if (backend.driver === 'compose') {
       try { backend.waitChild?.kill(); } catch { /* ignore */ }
-      await runTool(DOCKER_BIN, ['compose', '-p', backend.composeProject, '-f', backend.composeFile, 'down', '--remove-orphans'], { cwd: backend.cwd, env: backend.env, timeoutMs: Math.max(60_000, grace + 10_000) }).catch(() => {});
+      await runTool(DOCKER_BIN, ['compose', '-p', backend.composeProject, ...(backend.composeFiles || [backend.composeFile]).flatMap((composeFile) => ['-f', composeFile]), 'down', '--remove-orphans'], { cwd: backend.cwd, env: backend.env, timeoutMs: Math.max(60_000, grace + 10_000) }).catch(() => {});
+      if (backend.networkOverride) await fs.promises.rm(backend.networkOverride, { force: true }).catch(() => {});
     }
   }
 
@@ -601,7 +810,7 @@ class SiteManager extends DeliverySiteManager {
       catch (error) { return { ok: false, message: error.message }; }
     }
     if (backend.driver === 'compose') {
-      try { await runTool(DOCKER_BIN, ['compose', '-p', backend.composeProject, '-f', backend.composeFile, 'exec', '-T', backend.composeService, '/bin/sh', '-lc', command], { cwd: backend.cwd, env: backend.env, timeoutMs: 5000 }); return { ok: true }; }
+      try { await runTool(DOCKER_BIN, ['compose', '-p', backend.composeProject, ...(backend.composeFiles || [backend.composeFile]).flatMap((composeFile) => ['-f', composeFile]), 'exec', '-T', backend.composeService, '/bin/sh', '-lc', command], { cwd: backend.cwd, env: backend.env, timeoutMs: 5000 }); return { ok: true }; }
       catch (error) { return { ok: false, message: error.message }; }
     }
     return { ok: true };
@@ -698,13 +907,7 @@ class SiteManager extends DeliverySiteManager {
     const records = this.db.prepare('SELECT * FROM runtime_instances').all();
     for (const row of records) {
       if (row.driver === 'process' && /^\d+$/.test(String(row.external_id)) && process.platform === 'linux') {
-        const pid = Number(row.external_id);
-        try {
-          const environ = await fs.promises.readFile(`/proc/${pid}/environ`, 'utf8');
-          if (environ.includes('SHAM_MANAGED_RUNTIME=1') && environ.includes(`SHAM_SITE_ID=${row.site_id}`)) {
-            try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } }
-          }
-        } catch { /* stale or inaccessible */ }
+        await terminateReconciledProcess(Number(row.external_id), row.site_id).catch(() => {});
       }
       if (row.driver === 'compose' && row.external_id) {
         const site = this.getSite(row.site_id);
@@ -723,6 +926,12 @@ class SiteManager extends DeliverySiteManager {
     try {
       const result = await runTool(DOCKER_BIN, ['ps', '-aq', '--filter', 'label=sham.managed=true'], { timeoutMs: 20_000 });
       for (const id of result.stdout.split(/\s+/).filter(Boolean)) await runTool(DOCKER_BIN, ['rm', '-f', id], { timeoutMs: 30_000 }).catch(() => {});
+    } catch { /* Docker is optional. */ }
+    try {
+      const images = await runTool(DOCKER_BIN, ['image', 'ls', '--format', '{{.Repository}}:{{.Tag}}'], { timeoutMs: 20_000 });
+      for (const image of images.stdout.split(/\r?\n/).map((value) => value.trim()).filter((value) => /^sham\/site-\d+:/.test(value))) {
+        await runTool(DOCKER_BIN, ['image', 'rm', '-f', image], { timeoutMs: 60_000 }).catch(() => {});
+      }
     } catch { /* Docker is optional. */ }
     this.db.prepare('DELETE FROM runtime_instances').run();
   }
@@ -754,7 +963,10 @@ class SiteManager extends DeliverySiteManager {
     const installChildren = [...this.installProcesses.values()];
     await Promise.allSettled(installChildren.map((child) => terminateAndWait(child, 2000)));
     await Promise.allSettled([...this.installing.values()]);
-    await Promise.allSettled([...this.running.keys()].map((id) => this.stop(id)));
+    const runningIds = [...this.running.keys()];
+    for (let index = 0; index < runningIds.length; index += HEALTH_CHECK_CONCURRENCY) {
+      await Promise.allSettled(runningIds.slice(index, index + HEALTH_CHECK_CONCURRENCY).map((id) => this.stop(id)));
+    }
     try { this.flushStats(); } catch (error) { this.log(null, 'error', `Could not flush final request statistics: ${error.message}`); }
     while (this.pendingRuntimeLogs.length) { if (!this.flushRuntimeLogs(1000)) break; }
     if (this.runtimeLogFlushImmediate) { clearImmediate(this.runtimeLogFlushImmediate); this.runtimeLogFlushImmediate = null; }

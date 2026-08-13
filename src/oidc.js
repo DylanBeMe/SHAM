@@ -5,6 +5,33 @@ const crypto = require('node:crypto');
 const discoveryCache = new Map();
 const jwksCache = new Map();
 
+const MAX_OIDC_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_ID_TOKEN_BYTES = 128 * 1024;
+const MAX_CACHE_ENTRIES = 32;
+
+function cacheSet(cache, key, value) {
+  if (!cache.has(key) && cache.size >= MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
+  cache.set(key, value);
+}
+
+async function responseTextBounded(response, maxBytes = MAX_OIDC_RESPONSE_BYTES) {
+  const declared = Number(response.headers.get('content-length') || 0);
+  if (Number.isFinite(declared) && declared > maxBytes) throw new Error('OIDC endpoint response is too large.');
+  if (!response.body) return '';
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of response.body) {
+    const buffer = Buffer.from(chunk);
+    total += buffer.length;
+    if (total > maxBytes) {
+      try { await response.body.cancel?.(); } catch { /* ignore */ }
+      throw new Error('OIDC endpoint response is too large.');
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
+}
+
 function b64url(value) { return Buffer.from(value).toString('base64url'); }
 function sha256(value) { return crypto.createHash('sha256').update(String(value)).digest(); }
 function hashState(value) { return sha256(value).toString('hex'); }
@@ -33,7 +60,7 @@ async function fetchJson(url, options = {}) {
   const { timeoutMs: _timeoutMs, ...fetchOptions } = options;
   try {
     const response = await fetch(validateEndpoint(url), { ...fetchOptions, redirect: 'error', cache: 'no-store', signal: controller.signal, headers: { Accept: 'application/json', ...(options.headers || {}) } });
-    const text = await response.text();
+    const text = await responseTextBounded(response);
     let payload;
     try { payload = text ? JSON.parse(text) : {}; } catch { payload = {}; }
     if (!response.ok) throw new Error(payload.error_description || payload.error || `OIDC endpoint returned HTTP ${response.status}.`);
@@ -51,17 +78,22 @@ async function discovery(issuer) {
     if (!value[key]) throw new Error(`OIDC discovery is missing ${key}.`);
     value[key] = validateEndpoint(value[key], `OIDC ${key}`);
   }
-  discoveryCache.set(normalized, { value, expiresAt: Date.now() + 60 * 60_000 });
+  cacheSet(discoveryCache, normalized, { value, expiresAt: Date.now() + 60 * 60_000 });
   return value;
 }
 
 function parseJwt(token) {
-  const parts = String(token || '').split('.');
-  if (parts.length !== 3) throw new Error('OIDC provider returned an invalid ID token.');
+  const value = String(token || '');
+  if (!value || Buffer.byteLength(value) > MAX_ID_TOKEN_BYTES) throw new Error('OIDC provider returned an invalid ID token.');
+  const parts = value.split('.');
+  if (parts.length !== 3 || parts.some((part) => !part || part.length > MAX_ID_TOKEN_BYTES)) throw new Error('OIDC provider returned an invalid ID token.');
   try {
+    const header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    if (!header || Array.isArray(header) || typeof header !== 'object' || !payload || Array.isArray(payload) || typeof payload !== 'object') throw new Error('invalid claims');
     return {
-      header: JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8')),
-      payload: JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')),
+      header,
+      payload,
       signingInput: Buffer.from(`${parts[0]}.${parts[1]}`),
       signature: Buffer.from(parts[2], 'base64url')
     };
@@ -72,8 +104,8 @@ async function jwks(uri, force = false) {
   const cached = jwksCache.get(uri);
   if (!force && cached && cached.expiresAt > Date.now()) return cached.value;
   const value = await fetchJson(uri);
-  if (!Array.isArray(value.keys)) throw new Error('OIDC JWKS response is invalid.');
-  jwksCache.set(uri, { value, expiresAt: Date.now() + 60 * 60_000 });
+  if (!Array.isArray(value.keys) || value.keys.length > 100) throw new Error('OIDC JWKS response is invalid.');
+  cacheSet(jwksCache, uri, { value, expiresAt: Date.now() + 60 * 60_000 });
   return value;
 }
 

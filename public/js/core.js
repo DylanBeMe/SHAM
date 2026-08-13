@@ -102,6 +102,8 @@ function applyLocale(locale = 'en') {
   }
   $('#logout-button')?.setAttribute('aria-label', labels.signout);
   $('#logout-button')?.setAttribute('title', labels.signout);
+  const logoutLabel = $('.sidebar-logout-label');
+  if (logoutLabel) logoutLabel.textContent = labels.signout;
 }
 
 async function api(url, options = {}) {
@@ -129,14 +131,97 @@ async function api(url, options = {}) {
   return payload;
 }
 
+function topLayerHost() {
+  const dialogs = $$('dialog[open]');
+  if (dialogs.length) return dialogs.at(-1);
+  const popovers = $$('[popover]').filter((element) => {
+    try { return element.matches(':popover-open'); } catch { return false; }
+  });
+  return popovers.at(-1) || document.body;
+}
+
+function toastRegionForHost() {
+  const host = topLayerHost();
+  if (host === document.body) return $('#toast-region');
+  let region = $('.toast-region.top-layer-toast-region', host);
+  if (!region) {
+    region = document.createElement('div');
+    region.className = 'toast-region top-layer-toast-region';
+    region.setAttribute('aria-live', 'polite');
+    region.setAttribute('aria-atomic', 'false');
+    host.append(region);
+  }
+  return region;
+}
+
 function toast(message, type = 'success') {
   if (!message) return;
   const item = document.createElement('div');
   item.className = `toast ${['error', 'warning'].includes(type) ? type : 'success'}`;
   item.textContent = message;
-  $('#toast-region').append(item);
-  setTimeout(() => item.remove(), 4500);
+  const region = toastRegionForHost();
+  region.append(item);
+  setTimeout(() => {
+    item.remove();
+    if (region.classList.contains('top-layer-toast-region') && !region.children.length) region.remove();
+  }, 4500);
 }
+
+let floatingTooltip = null;
+function hideFloatingTooltip() {
+  if (!floatingTooltip) return;
+  floatingTooltip.hidden = true;
+  floatingTooltip.remove();
+  floatingTooltip = null;
+}
+
+function showFloatingTooltip(trigger) {
+  const text = trigger?.dataset?.tooltip;
+  if (!text) return;
+  hideFloatingTooltip();
+  const host = trigger.closest('dialog[open]') || (() => {
+    const popover = trigger.closest('[popover]');
+    if (!popover) return document.body;
+    try { return popover.matches(':popover-open') ? popover : document.body; } catch { return document.body; }
+  })();
+  const tooltip = document.createElement('div');
+  tooltip.className = 'floating-tooltip';
+  tooltip.setAttribute('role', 'tooltip');
+  tooltip.textContent = text;
+  host.append(tooltip);
+  floatingTooltip = tooltip;
+  requestAnimationFrame(() => {
+    if (!floatingTooltip || !tooltip.isConnected) return;
+    const rect = trigger.getBoundingClientRect();
+    const bounds = tooltip.getBoundingClientRect();
+    const margin = 10;
+    let left = rect.left + rect.width / 2 - bounds.width / 2;
+    left = Math.max(margin, Math.min(left, innerWidth - bounds.width - margin));
+    let top = rect.top - bounds.height - 9;
+    if (top < margin) top = Math.min(innerHeight - bounds.height - margin, rect.bottom + 9);
+    tooltip.style.left = `${Math.round(left)}px`;
+    tooltip.style.top = `${Math.round(Math.max(margin, top))}px`;
+    tooltip.hidden = false;
+  });
+}
+
+document.addEventListener('pointerover', (event) => {
+  const trigger = event.target.closest?.('.help-tip[data-tooltip]');
+  if (trigger && !trigger.contains(event.relatedTarget)) showFloatingTooltip(trigger);
+});
+document.addEventListener('pointerout', (event) => {
+  const trigger = event.target.closest?.('.help-tip[data-tooltip]');
+  if (trigger && !trigger.contains(event.relatedTarget)) hideFloatingTooltip();
+});
+document.addEventListener('focusin', (event) => {
+  const trigger = event.target.closest?.('.help-tip[data-tooltip]');
+  if (trigger) showFloatingTooltip(trigger);
+});
+document.addEventListener('focusout', (event) => {
+  if (event.target.closest?.('.help-tip[data-tooltip]')) hideFloatingTooltip();
+});
+window.addEventListener('scroll', hideFloatingTooltip, true);
+window.addEventListener('resize', hideFloatingTooltip);
 
 function setBusy(button, busy, label = 'Working…') {
   if (!button) return;
@@ -389,10 +474,16 @@ async function bootstrap() {
 function mergeInstanceAdministration() {
   if (state.user?.role !== 'admin') return;
   const source = $('#section-admin');
-  const target = $('#operations-instance');
+  const target = $('#operations-administration');
   if (!source || !target || target.dataset.adminMerged === '1') return;
   const wrapper = document.createElement('div');
-  wrapper.className = 'merged-instance-administration';
+  wrapper.className = 'merged-instance-administration administration-category';
+  const sourceHeader = $('.page-header', source);
+  const categoryHeader = document.createElement('header');
+  categoryHeader.className = 'settings-category-header';
+  categoryHeader.innerHTML = `<div><p class="eyebrow">Instance control</p><h2>Administration</h2><p class="muted">Accounts, Cloudflare, Certbot, identity, users, and persistent instance policy.</p></div>`;
+  wrapper.append(categoryHeader);
+  sourceHeader?.remove();
   while (source.firstChild) wrapper.append(source.firstChild);
   target.append(wrapper);
   target.dataset.adminMerged = '1';
@@ -434,26 +525,51 @@ $('#open-performance').addEventListener('click', () => showSection('performance'
 
 function commandItems() {
   const items = [
-    { label: 'Dashboard', hint: 'Open overview', run: () => showSection('overview') },
-    { label: 'Sites', hint: 'Open site list', run: () => showSection('sites') },
-    { label: 'Observability', hint: 'Events and audit', run: () => showSection('activity') },
-    { label: 'Metrics & alerts', hint: 'Performance', run: () => showSection('performance') },
-    { label: 'Security', hint: 'Account protection', run: () => showSection('security') },
-    { label: 'Settings', hint: 'Operations and instance', run: () => showSection('operations') },
-    { label: 'New site', hint: 'Deploy', run: openNewSite }
+    { label: 'Dashboard', hint: 'Overview · traffic · health', keywords: 'home quick views requests visitors', run: () => showSection('overview') },
+    { label: 'Sites', hint: 'Deployments and websites', keywords: 'applications runtimes domains', run: () => showSection('sites') },
+    { label: 'Observability', hint: 'Events, logs and audit', keywords: 'activity audit logs events', run: () => showSection('activity') },
+    { label: 'Performance', hint: 'Metrics & alerts', keywords: 'cpu memory latency p50 p95 errors throughput requests event loop disk queues', run: () => showSection('performance') },
+    { label: 'Security', hint: 'Account protection', keywords: 'totp passkeys recovery api tokens bearer', run: () => showSection('security') },
+    { label: 'Extensions', hint: 'Plugins and playground', keywords: 'plugin development extension', run: () => showSection('plugins') },
+    { label: 'Documentation', hint: 'Guides, API and plugin docs', keywords: 'help api cli docker compose git runtime', run: () => showSection('documentation') },
+    { label: 'New site', hint: 'Deploy', keywords: 'upload git docker image dockerfile compose', run: openNewSite }
   ];
+  if (state.user?.role === 'admin') {
+    const settings = [
+      ['Delivery', 'Git releases, previews and deploys', 'delivery'],
+      ['Configuration', 'Environment variables and databases', 'configuration'],
+      ['Automation', 'Jobs and runtime log search', 'automation'],
+      ['Instance', 'Git providers, backups and observability', 'instance'],
+      ['Administration', 'Accounts, Cloudflare, Certbot and OIDC', 'administration']
+    ];
+    for (const [label, hint, tab] of settings) items.push({
+      label: `Settings: ${label}`, hint, keywords: `settings operations ${label.toLowerCase()} ${hint.toLowerCase()}`,
+      run: () => { showSection('operations'); setOperationsTab(tab); }
+    });
+  }
+  const docs = [
+    ['Getting started', 'usage'], ['Runtimes & Docker', 'runtimes'], ['Git & CI/CD', 'git'],
+    ['API & CLI', 'api'], ['Operations & Security', 'operations'], ['Plugin development', 'development']
+  ];
+  for (const [label, tabName] of docs) items.push({
+    label: `Docs: ${label}`, hint: 'Documentation', keywords: `help guide ${label.toLowerCase()}`,
+    run: () => { showSection('documentation'); const tab = $(`[data-doc-tab="${tabName}"]`); if (tab && typeof selectDocumentationTab === 'function') selectDocumentationTab(tab); }
+  });
   for (const site of state.sites) {
-    items.push({ label: `Open ${site.name}`, hint: siteDisplayUrl(site), run: () => openSiteWorkspace(site) });
-    if (site.runtime.running && site.runtime_type !== 'static') items.push({ label: `Restart ${site.name}`, hint: 'Runtime action', run: () => handleSiteAction(site, 'restart', null) });
-    if (state.user?.role === 'admin' && site.git_url) items.push({ label: `Deploy ${site.name}`, hint: `${site.git_branch || 'main'} · Git`, run: async () => { await api(`/api/sites/${site.id}/deploy/git`, { method: 'POST', body: {} }); toast(`${site.name} deployed.`); await loadSites(); } });
-    items.push({ label: `Logs for ${site.name}`, hint: 'Site workspace', run: () => openSiteWorkspace(site, 'logs') });
+    const url = siteDisplayUrl(site);
+    items.push({ label: `Open ${site.name}`, hint: url, keywords: `${site.name} ${url} website site settings`, run: () => openSiteWorkspace(site) });
+    items.push({ label: `Files for ${site.name}`, hint: 'Site workspace', keywords: 'editor upload files content', run: () => openSiteWorkspace(site, 'files') });
+    items.push({ label: `Logs for ${site.name}`, hint: 'Site workspace', keywords: 'runtime stdout stderr logs', run: () => openSiteWorkspace(site, 'logs') });
+    items.push({ label: `Settings for ${site.name}`, hint: 'Site workspace', keywords: 'site config domain runtime network', run: () => openSiteWorkspace(site, 'settings') });
+    if (site.runtime.running && site.runtime_type !== 'static') items.push({ label: `Restart ${site.name}`, hint: 'Runtime action', keywords: 'process container compose restart', run: () => handleSiteAction(site, 'restart', null) });
+    if (state.user?.role === 'admin' && site.git_url) items.push({ label: `Deploy ${site.name}`, hint: `${site.git_branch || 'main'} · Git`, keywords: 'git ci cd deploy release', run: async () => { await api(`/api/sites/${site.id}/deploy/git`, { method: 'POST', body: {} }); toast(`${site.name} deployed.`); await loadSites(); } });
   }
   return items;
 }
 
 function renderCommands() {
   const query = $('#command-search').value.trim().toLowerCase();
-  const items = commandItems().filter((item) => !query || `${item.label} ${item.hint}`.toLowerCase().includes(query)).slice(0, 30);
+  const items = commandItems().filter((item) => !query || `${item.label} ${item.hint} ${item.keywords || ''}`.toLowerCase().includes(query)).slice(0, 30);
   state.commandItems = items;
   state.commandIndex = Math.min(state.commandIndex, Math.max(0, items.length - 1));
   $('#command-results').innerHTML = items.length ? items.map((item, index) => `<button class="command-item ${index === state.commandIndex ? 'active' : ''}" data-command-index="${index}" type="button" role="option" aria-selected="${index === state.commandIndex}"><span>${escapeHtml(item.label)}</span><small>${escapeHtml(item.hint)}</small></button>`).join('') : '<div class="empty-state compact"><p>No matching command.</p></div>';
@@ -490,7 +606,7 @@ document.addEventListener('keydown', (event) => {
 function showSection(sectionName, { refresh = true } = {}) {
   if (sectionName === 'admin') {
     sectionName = 'operations';
-    if (typeof setOperationsTab === 'function') setOperationsTab('instance');
+    if (typeof setOperationsTab === 'function') setOperationsTab('administration');
   }
   const changed = state.currentSection !== sectionName;
   state.currentSection = sectionName;

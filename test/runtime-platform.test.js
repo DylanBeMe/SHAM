@@ -1,3 +1,4 @@
+process.env.SHAM_JWT_SECRET ||= 'runtime-platform-test-secret-at-least-32-characters';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
@@ -117,4 +118,82 @@ test('release activation starts candidates only after placing them at their stab
   assert.match(section, /prepareCandidate\(site, releaseRoot/);
   assert.doesNotMatch(section, /rename\(stage, root\)/);
   assert.match(section, /active_release_directory = \?/);
+});
+
+test('runtime manifest parser preserves quoted hashes while stripping real comments', () => {
+  const parsed = parseSimpleYaml('runtime:\n  command: "node app.js #production" # deployment comment\n');
+  assert.equal(parsed.runtime.command, 'node app.js #production');
+});
+
+test('runtime resolution fails closed for unknown presets and invalid buildpack builders', () => {
+  assert.throws(() => resolveRuntimeSpec({ runtime_type: 'process', runtime_preset: 'not-a-runtime', start_command: 'echo nope' }, process.cwd()), /Unknown runtime preset/);
+  assert.throws(() => validateSiteInput({
+    name: 'Bad builder', port: 4310, runtimeType: 'container', runtimePreset: 'buildpack', containerMode: 'buildpack',
+    buildpackBuilder: `builder/${'x'.repeat(300)}`
+  }), /Buildpack builder is invalid or too long/);
+});
+
+test('runtime line logger bounds newline-free output without dropping the final record', async () => {
+  const stream = new PassThrough();
+  const lines = [];
+  lineLogger(stream, (line) => lines.push(line), { maxLineLength: 16 });
+  stream.end('abcdefghijklmnopqrstuvwxyz');
+  await new Promise((resolve) => stream.once('end', resolve));
+  assert.deepEqual(lines, ['abcdefghijklmnop …[truncated]']);
+});
+
+test('runtime none-readiness still rejects a child that fails to spawn', async () => {
+  const child = shellCommand(['sham-command-that-does-not-exist-none-xyz'], { stdio: 'ignore' });
+  await assert.rejects(() => waitForReadiness({ readiness: { type: 'none', timeoutMs: 2000 } }, { child }), /could not start/);
+});
+
+test('runtime UI limits and OIDC requirements match backend validation', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  const admin = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'admin.js'), 'utf8');
+  assert.match(html, /id="site-cpu-limit"[^>]*max="256"/);
+  assert.match(html, /id="site-pids-limit"[^>]*min="16"/);
+  assert.doesNotMatch(html, /Compose is administrator-only/i);
+  assert.match(admin, /\$\('#oidc-issuer'\)\.required = enabled/);
+  assert.match(admin, /\$\('#oidc-default-role'\)\.disabled = !enabled \|\| !autoProvision/);
+});
+
+test('runtime promotion, reconciliation, and container cleanup stay transactional', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'sites', 'runtime.js'), 'utf8');
+  assert.match(source, /async promoteCandidate\([\s\S]*?const old = runtime\?\.backend \|\| null[\s\S]*?catch \(error\)[\s\S]*?runtime\.backend = old[\s\S]*?stopBackend\(backend\)/);
+  assert.match(source, /async rollbackPromotion\([\s\S]*?if \(!old\)[\s\S]*?DELETE FROM runtime_instances[\s\S]*?stopBackend\(candidate\.backend\)/);
+  assert.match(source, /terminateReconciledProcess/);
+  assert.match(source, /managedImage[\s\S]*?image', 'rm', '-f'/);
+});
+
+test('Compose runtime validation rejects unmanaged exposure and enforces no-egress overrides', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'sites', 'runtime.js'), 'utf8');
+  assert.match(source, /cannot publish host ports; auxiliary services must stay on the Compose network/);
+  assert.match(source, /cannot use host bind mounts\. Use named volumes instead/);
+  assert.match(source, /cannot be external; SHAM-managed projects must not attach unmanaged Docker resources/);
+  assert.match(source, /runtimeOverride\.networks = Object\.fromEntries\([\s\S]*internal: true/);
+  assert.match(source, /rejectOutputOverflow: true/);
+});
+
+test('scheduled jobs target the active runtime instead of stale fixed container names', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'operations', 'configuration.js'), 'utf8');
+  assert.doesNotMatch(source, /sham-site-\$\{siteId\}/);
+  assert.match(source, /backend\.containerName \|\| backend\.containerId/);
+  assert.match(source, /backend\.composeFiles/);
+});
+
+test('backup restore validates the full archive and database before swapping live data', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'backup-restore.js'), 'utf8');
+  assert.match(source, /inspectTarLines/);
+  assert.match(source, /database\.pragma\('quick_check'/);
+  assert.match(source, /for \(const table of \['users', 'settings', 'sites'\]\)/);
+  assert.match(source, /validateRestoreTree\(stageRoot\)/);
+  assert.match(source, /rename\(DATA_DIR, rollbackRoot\)/);
+});
+
+test('bulk runtime and tunnel shutdown work is concurrency-bounded', () => {
+  const runtime = fs.readFileSync(path.join(__dirname, '..', 'src', 'sites', 'runtime.js'), 'utf8');
+  const tunnels = fs.readFileSync(path.join(__dirname, '..', 'src', 'cloudflare-tunnel.js'), 'utf8');
+  assert.match(runtime, /runningIds\.slice\(index, index \+ HEALTH_CHECK_CONCURRENCY\)/);
+  assert.match(tunnels, /settleInBatches\(rows,[\s\S]*?, 4\)/);
+  assert.match(tunnels, /settleInBatches\(managers,[\s\S]*?, 4\)/);
 });

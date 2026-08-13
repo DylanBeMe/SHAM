@@ -315,6 +315,84 @@ $('#plugin-form').addEventListener('submit', async (event) => {
   finally { setBusy(button, false); }
 });
 
+const PLUGIN_PLAYGROUND_DEFAULT_MANIFEST = {
+  id: 'playground-example',
+  name: 'Playground Example',
+  version: '1.0.0',
+  type: 'json',
+  permissions: ['ui:dashboard'],
+  ui: {
+    dashboardCards: [{ label: 'Preview card', value: '42', description: 'Rendered without installing the plugin.' }],
+    pages: [{ id: 'example', title: 'Example page', description: 'Use the playground to iterate on plugin UI.', cards: [{ label: 'Status', value: 'Ready' }] }]
+  }
+};
+
+function resetPluginPlayground() {
+  $('#plugin-playground-manifest').value = JSON.stringify(PLUGIN_PLAYGROUND_DEFAULT_MANIFEST, null, 2);
+  $('#plugin-playground-client').value = '';
+  $('#plugin-playground-status').textContent = 'Edit the manifest, then validate or run a preview.';
+  $('#plugin-playground-result').textContent = '';
+  $('#plugin-playground-frame').srcdoc = '<!doctype html><meta charset="utf-8"><body style="font-family:system-ui;padding:2rem">Preview not running.</body>';
+  state.pluginPlaygroundManifest = null;
+}
+
+function openPluginPlayground() {
+  if (state.user?.role !== 'admin') return toast('Administrator access is required for the plugin playground.', 'error');
+  resetPluginPlayground();
+  showModal($('#plugin-playground-dialog'));
+  requestAnimationFrame(() => $('#plugin-playground-manifest').focus());
+}
+
+async function validatePluginPlaygroundManifest() {
+  let manifest;
+  try { manifest = JSON.parse($('#plugin-playground-manifest').value); }
+  catch (error) { throw new Error(`plugin.json is not valid JSON: ${error.message}`); }
+  const result = await api('/api/admin/plugins/playground/validate', { method: 'POST', body: { manifest } });
+  state.pluginPlaygroundManifest = result.manifest;
+  $('#plugin-playground-result').textContent = JSON.stringify(result.manifest, null, 2);
+  $('#plugin-playground-status').textContent = `Valid manifest · ${result.manifest.name} v${result.manifest.version}`;
+  return result.manifest;
+}
+
+function playgroundSrcdoc(manifest, clientSource) {
+  const manifestJson = JSON.stringify(manifest).replaceAll('<', '\\u003c');
+  const source = String(clientSource || '').replace(/<\/script/gi, '<\\/script');
+  const declarative = JSON.stringify({ id: manifest.id, name: manifest.name, type: manifest.type, ui: manifest.ui || {} }).replaceAll('<', '\\u003c');
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+  :root{font-family:Inter,system-ui,sans-serif;color:#f7f2ff;background:#0c0717}*{box-sizing:border-box}body{margin:0;padding:18px;background:linear-gradient(135deg,#0c0717,#150c26);min-height:100vh}.shell{display:grid;gap:14px}.panel,.stat-card{border:1px solid rgba(220,197,255,.18);border-radius:14px;background:#1d1230;padding:14px}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.stat-card{display:grid;gap:4px}.stat-card span,.muted{color:#ad9bc4;font-size:12px}.stat-card strong{font-size:22px}.nav{display:flex;gap:8px;flex-wrap:wrap}.nav button{border:1px solid rgba(220,197,255,.18);border-radius:9px;padding:8px 10px;background:#281842;color:#f7f2ff;cursor:pointer}.nav button.active{border-color:#a970ff;background:rgba(169,112,255,.16)}pre{white-space:pre-wrap;overflow-wrap:anywhere;color:#ffb3c3}.plugin-content{display:grid;gap:10px}</style></head><body><div id="root" class="shell"></div><script>
+  const manifest=${manifestJson}; const fallback=${declarative}; const root=document.getElementById('root');
+  function esc(v){return String(v??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]));}
+  function renderDefinition(def){
+    root.innerHTML=''; const title=document.createElement('div'); title.className='panel'; title.innerHTML='<strong>'+esc(def.name||manifest.name)+'</strong><div class="muted">'+esc(def.id||manifest.id)+' · sandbox preview</div>'; root.append(title);
+    const cards=(def.dashboardCards||def.ui?.dashboardCards||[]).slice(0,24); if(cards.length){const grid=document.createElement('div');grid.className='stats';for(const card of cards){const item=document.createElement('div');item.className='stat-card';item.innerHTML='<span>'+esc(card.label||'Card')+'</span><strong>'+esc(card.value??'…')+'</strong><span>'+esc(card.description||'')+'</span>';grid.append(item)}root.append(grid)}
+    const pages=(def.pages||def.ui?.pages||[]).slice(0,20); if(!pages.length)return; const nav=document.createElement('div');nav.className='nav'; const content=document.createElement('div');content.className='panel plugin-content'; root.append(nav,content);
+    const open=(page,button)=>{nav.querySelectorAll('button').forEach(x=>x.classList.remove('active'));button.classList.add('active');content.innerHTML='';if(page.description){const p=document.createElement('p');p.className='muted';p.textContent=page.description;content.append(p)} if(typeof page.render==='function'){Promise.resolve(page.render(content,{api:async()=>({playground:true,count:3}),toast:(message)=>{const p=document.createElement('p');p.textContent=message;content.append(p)},pluginId:def.id,getSites:()=>[]})).catch(error=>{content.innerHTML='<pre>'+esc(error?.stack||error)+'</pre>'});return} const pageCards=(page.cards||[]).slice(0,24);if(pageCards.length){const grid=document.createElement('div');grid.className='stats';for(const card of pageCards){const item=document.createElement('div');item.className='stat-card';item.innerHTML='<span>'+esc(card.label||'Card')+'</span><strong>'+esc(card.value??'…')+'</strong><span>'+esc(card.description||'')+'</span>';grid.append(item)}content.append(grid)}};
+    pages.forEach((page,index)=>{const button=document.createElement('button');button.textContent=page.title||page.id||('Page '+(index+1));button.onclick=()=>open(page,button);nav.append(button);if(index===0)queueMicrotask(()=>open(page,button))});
+  }
+  window.SHAM={registerPlugin(def){if(!def||String(def.id||'')!==String(manifest.id))throw new Error('Client plugin ID must match plugin.json');renderDefinition(def)},api:async()=>({playground:true,count:3}),toast:()=>{},getSites:()=>[],getUser:()=>({username:'playground',role:'admin'})};
+  window.addEventListener('error',event=>{const pre=document.createElement('pre');pre.textContent=event.error?.stack||event.message;root.append(pre)});
+  ${source ? source : `window.SHAM.registerPlugin(fallback);`}
+  <\/script></body></html>`;
+}
+
+$('#plugin-playground-button').addEventListener('click', openPluginPlayground);
+$('#plugin-playground-reset').addEventListener('click', resetPluginPlayground);
+$('#plugin-playground-validate').addEventListener('click', async (event) => {
+  setBusy(event.currentTarget, true, 'Validating…');
+  try { await validatePluginPlaygroundManifest(); toast('Plugin manifest is valid.'); }
+  catch (error) { state.pluginPlaygroundManifest = null; $('#plugin-playground-status').textContent = error.message; $('#plugin-playground-result').textContent = error.message; toast(error.message, 'error'); }
+  finally { setBusy(event.currentTarget, false); }
+});
+$('#plugin-playground-run').addEventListener('click', async (event) => {
+  setBusy(event.currentTarget, true, 'Preparing…');
+  try {
+    const manifest = await validatePluginPlaygroundManifest();
+    $('#plugin-playground-frame').srcdoc = playgroundSrcdoc(manifest, $('#plugin-playground-client').value);
+    $('#plugin-playground-status').textContent = 'Preview running in a sandboxed frame. Network access is disabled.';
+  } catch (error) { $('#plugin-playground-status').textContent = error.message; toast(error.message, 'error'); }
+  finally { setBusy(event.currentTarget, false); }
+});
+
 function selectDocumentationTab(tab, { focus = false } = {}) {
   $$('[data-doc-tab]').forEach((item) => {
     const active = item === tab;
@@ -322,8 +400,7 @@ function selectDocumentationTab(tab, { focus = false } = {}) {
     item.setAttribute('aria-selected', String(active));
     item.tabIndex = active ? 0 : -1;
   });
-  $('#docs-usage').hidden = tab.dataset.docTab !== 'usage';
-  $('#docs-development').hidden = tab.dataset.docTab !== 'development';
+  $$('[data-doc-panel]').forEach((panel) => { panel.hidden = panel.dataset.docPanel !== tab.dataset.docTab; });
   if (focus) tab.focus();
 }
 
