@@ -228,6 +228,31 @@ function validateOptionalHostname(value, label) {
   return validateDomain(raw);
 }
 
+
+function validateProxyTarget(value, runtimeType) {
+  const raw = String(value || '').trim();
+  if (runtimeType !== 'proxy') return raw.slice(0, 2048);
+  if (!raw) throw new Error('Reverse proxy target is required.');
+  let target;
+  try { target = new URL(raw); }
+  catch { throw new Error('Reverse proxy target must be a valid HTTP or HTTPS URL.'); }
+  if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Reverse proxy target must use HTTP or HTTPS.');
+  if (target.username || target.password) throw new Error('Reverse proxy target must not embed credentials.');
+  return target.href.slice(0, 2048);
+}
+
+function validateBuildCommand(value, label) {
+  const command = String(value || '').trim();
+  if (command.includes('\0') || /[\r\n]/.test(command) || command.length > 2000) throw new Error(`${label} must be a single command up to 2,000 characters.`);
+  return command;
+}
+
+function validateBuildOutput(value) {
+  const raw = String(value || '').replaceAll('\\', '/').trim();
+  if (!raw || raw === '.') return '';
+  return safeRelativePath(raw, 'Build output directory');
+}
+
 function validateSiteInput(body, defaults = {}) {
   const name = String(body.name ?? defaults.name ?? '').trim();
   if (name.length < 1 || name.length > 100) throw new Error('Site name must be 1–100 characters.');
@@ -241,7 +266,7 @@ function validateSiteInput(body, defaults = {}) {
   }
 
   const runtimeType = String(body.runtimeType ?? body.runtime_type ?? defaults.runtime_type ?? 'static');
-  if (!['static', 'node'].includes(runtimeType)) throw new Error('Runtime type must be static or node.');
+  if (!['static', 'node', 'proxy'].includes(runtimeType)) throw new Error('Runtime type must be static, node, or proxy.');
   const securityPreset = String(body.securityPreset ?? body.security_preset ?? defaults.security_preset ?? 'balanced').toLowerCase();
   if (!['off', 'balanced', 'strict', 'custom'].includes(securityPreset)) throw new Error('Security-header preset must be off, balanced, strict, or custom.');
   const restartPolicy = String(body.restartPolicy ?? body.restart_policy ?? defaults.restart_policy ?? 'on-failure').toLowerCase();
@@ -290,6 +315,10 @@ function validateSiteInput(body, defaults = {}) {
     bind_host: validateBindHost(body.bindHost ?? body.bind_host ?? defaults.bind_host),
     port,
     runtime_type: runtimeType,
+    proxy_target: validateProxyTarget(body.proxyTarget ?? body.proxy_target ?? defaults.proxy_target ?? '', runtimeType),
+    install_command: validateBuildCommand(body.installCommand ?? body.install_command ?? defaults.install_command ?? '', 'Install command'),
+    build_command: validateBuildCommand(body.buildCommand ?? body.build_command ?? defaults.build_command ?? '', 'Build command'),
+    build_output_dir: validateBuildOutput(body.buildOutputDir ?? body.build_output_dir ?? defaults.build_output_dir ?? ''),
     entry_file: safeRelativePath(body.entryFile ?? body.entry_file ?? defaults.entry_file ?? 'index.html', 'Entry file'),
     node_entry: safeRelativePath(body.nodeEntry ?? body.node_entry ?? defaults.node_entry ?? 'server.js', 'Node entry file'),
     install_dependencies: bool(body.installDependencies ?? body.install_dependencies, Boolean(defaults.install_dependencies)),
@@ -354,5 +383,8 @@ module.exports = {
   validateErrorPages,
   validateCacheRules,
   validateContainerImage,
+  validateProxyTarget,
+  validateBuildCommand,
+  validateBuildOutput,
   validateSiteInput
 };

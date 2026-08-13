@@ -3,8 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const root = path.resolve(__dirname, '..');
-const read = (name) => fs.readFileSync(path.join(root, name), 'utf8');
+const { root, source: read } = require('./source-tree');
 
 test('compressed response cache counts variants and deduplicates first-hit work', () => {
   const source = read('src/site-manager.js');

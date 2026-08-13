@@ -5,8 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const root = path.resolve(__dirname, '..');
-const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
+const { root, source: read } = require('./source-tree');
 const temporaryData = fs.mkdtempSync(path.join(os.tmpdir(), 'sham-security-performance-'));
 process.env.SHAM_DATA_PATH = temporaryData;
 process.env.SHAM_JWT_SECRET = 'security-performance-test-secret-at-least-32-characters';
@@ -128,9 +127,10 @@ test('snapshot cleanup warnings propagate to the dashboard instead of turning su
   assert.match(app, /Snapshot restored\. \$\{result\.warning\}/);
 });
 
-test('all security, service, worker, and browser code is included in the syntax-check command', () => {
-  const packageJson = JSON.parse(read('package.json'));
-  for (const file of ['src/secret-store.js', 'src/mfa.js', 'src/webauthn.js', 'src/performance-monitor.js', 'src/dependency-scanner.js', 'src/snapshot-manager.js', 'src/edge-proxy.js', 'src/cloudflare-tunnel.js', 'src/plugin-signing.js', 'src/plugin-sandbox-worker.js']) {
-    assert.match(packageJson.scripts.check, new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  }
+test('all security, service, worker, and browser code is included in the recursive syntax check', () => {
+  const pkg = JSON.parse(read('package.json'));
+  assert.match(pkg.scripts.check, /scripts\/check-syntax\.js/);
+  const checker = read('scripts/check-syntax.js');
+  assert.match(checker, /const roots = \[path\.join\(root, 'src'\), path\.join\(root, 'public'\)\]/);
+  assert.match(checker, /if \(entry\.isDirectory\(\)\) collect\(absolute\)/);
 });

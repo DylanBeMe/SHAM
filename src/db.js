@@ -142,6 +142,10 @@ ensureColumn('sites', 'release_mode', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('sites', 'git_url', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('sites', 'git_branch', "TEXT NOT NULL DEFAULT 'main'");
 ensureColumn('sites', 'preview_domain', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'proxy_target', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'install_command', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'build_command', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('sites', 'build_output_dir', "TEXT NOT NULL DEFAULT ''");
 
 ensureColumn('users', 'totp_secret', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0');
@@ -317,6 +321,24 @@ db.exec(`
     FOREIGN KEY (job_id) REFERENCES site_jobs(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS site_deployments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id INTEGER NOT NULL,
+    source TEXT NOT NULL DEFAULT 'upload',
+    status TEXT NOT NULL DEFAULT 'running',
+    ref TEXT NOT NULL DEFAULT '',
+    commit_sha TEXT NOT NULL DEFAULT '',
+    commit_author TEXT NOT NULL DEFAULT '',
+    commit_message TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_site_deployments_recent ON site_deployments(site_id, id DESC);
+
   CREATE TABLE IF NOT EXISTS site_releases (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     site_id INTEGER NOT NULL,
@@ -421,7 +443,7 @@ db.exec(`
   INSERT OR IGNORE INTO settings (key, value) VALUES ('plugin_trusted_keys_json', '[]');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('allow_unsigned_plugins', '0');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('log_retention_days', '30');
-  INSERT OR IGNORE INTO settings (key, value) VALUES ('visitor_privacy_mode', 'mask');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('visitor_privacy_mode', 'none');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('alert_cpu_percent', '90');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('alert_event_loop_ms', '250');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('alert_disk_percent', '90');
@@ -437,6 +459,7 @@ db.exec(`
   INSERT OR IGNORE INTO settings (key, value) VALUES ('prometheus_token', '');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('otel_endpoint', '');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('otel_headers', '');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('git_webhook_base_url', '');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('public_status_enabled', '0');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('public_status_title', 'SHAM service status');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('instance_locale', 'en');
@@ -444,6 +467,10 @@ db.exec(`
   INSERT OR IGNORE INTO settings (key, value) VALUES ('update_channel', 'stable');
 
 `);
+
+ensureColumn('site_visitor_stats', 'client_type', "TEXT NOT NULL DEFAULT 'unknown'");
+ensureColumn('site_visitor_stats', 'user_agent', "TEXT NOT NULL DEFAULT ''");
+db.exec('CREATE INDEX IF NOT EXISTS idx_site_visitor_stats_client ON site_visitor_stats(client_type, last_request_at DESC)');
 
 function tightenDatabasePermissions() {
   if (process.platform === 'win32') return;

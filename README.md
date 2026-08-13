@@ -4,7 +4,7 @@
 
 <h1 align="center">SHAM — Simple Hosting And More</h1>
 
-<p align="center"><strong>A self-hosted control plane for static sites and managed Node.js apps.</strong></p>
+<p align="center"><strong>A self-hosted deployment and operations control plane for static sites, managed Node.js apps, and reverse-proxied services.</strong></p>
 <p align="center"><strong>Current release: 1.0.0</strong> · <strong>License: AGPL-3.0-or-later</strong></p>
 
 SHAM keeps deployments, runtime controls, security, delivery, observability, and integrations in one browser dashboard while keeping application data on infrastructure you control.
@@ -12,14 +12,17 @@ SHAM keeps deployments, runtime controls, security, delivery, observability, and
 It supports:
 
 - Static HTML, CSS, JavaScript, and asset hosting.
+- Reverse-proxy sites for HTTP/S services that run elsewhere on the LAN or host.
 - Optional on-the-fly minification for HTML, CSS, JavaScript, and ES modules.
 - Optional compatibility-oriented JavaScript obfuscation with explicit risk acknowledgement, bounded static analysis, preserved public names, and automatic fallback when a transform fails.
 - Managed Node.js applications launched as `node server.js` or another configured entry file.
+- Configurable install/build commands and static build-output publication for Vite, React, Astro, and similar projects.
+- Deployment presets for Static HTML, Vite/React, Astro, Next.js standalone, Node/Express, reverse proxy, and custom stacks.
 - Automatic or manual `npm install --omit=dev`.
 - Per-site ports, bind addresses, custom headers, caching, SPA fallback, and domain-only access.
 - Per-site local firewall controls and optional Cloudflare WAF custom-rule synchronization.
 - File browsing, text-document editing, single-file replacement, and single-file deletion.
-- Persistent request, bandwidth, error, response-time, visitor-IP, and country statistics with an Equal Earth country choropleth map.
+- Persistent request, bandwidth, error, response-time, visitor-IP, user-agent, automated-client, and country statistics with an Equal Earth country choropleth map and one-click site firewall bans.
 - Certbot certificate issuance and renewal.
 - Cloudflare DNS/WAF integration plus independently configurable, supervised Cloudflare Tunnel connectors per site for outbound-only ingress.
 - Installable JSON and JavaScript plugins with settings and dashboard UI extensions.
@@ -32,7 +35,7 @@ It supports:
 - Structured runtime logs, privacy-aware visitor retention, configurable alerts, anomaly detection, and a live performance monitor.
 - Purple-first preset themes plus a local custom-theme editor.
 - Docker deployment with a configurable persistent storage path.
-- Optional per-site Docker isolation, atomic release deployment and rollback, Git/webhook delivery, preview hostnames, encrypted environment variables and database profiles, scheduled jobs, off-host backups, Anubis anti-bot sidecars, observability exports, public status, localization, and signed SHAM updates.
+- Optional per-site Docker isolation, atomic release deployment and rollback, Git/webhook delivery, encrypted GitHub/GitLab provider connections, deployment history, preview hostnames, encrypted environment variables and database profiles, scheduled jobs, off-host backups, Anubis anti-bot sidecars, observability exports, public status, localization, and signed SHAM updates.
 
 ## Important trust boundary
 
@@ -123,13 +126,19 @@ A tunnel does not require inbound port forwarding. When Cloudflare Tunnel is the
 
 ### Atomic releases, Git, webhooks, and previews
 
-Git deployments clone into a new release directory, optionally install production dependencies, validate the entry point, start the candidate, and then switch traffic. Previous releases remain available for one-click rollback. Preview deployments receive a temporary hostname and expire automatically; they are intended for validation rather than permanent hosting.
+Git deployments clone into a new release directory, optionally run a bounded install command and build command, validate the configured entry/output, start the candidate, and then switch traffic. Previous releases remain available for one-click rollback. Each site workspace keeps deployment history with status, duration, commit SHA, author, message, logs access, redeploy, and rollback actions. Preview deployments receive a temporary hostname and expire automatically; they are intended for validation rather than permanent hosting.
 
-A repository can trigger deployment through `POST /api/hooks/deploy/:id`. Configure `DEPLOY_WEBHOOK_SECRET`, send the raw webhook body, and include either `X-Hub-Signature-256: sha256=<hex HMAC-SHA256>` or `X-SHAM-Signature: sha256=<hex HMAC-SHA256>`. Webhooks are rate-limited, branch-filtered, signature-checked with a timing-safe comparison, and serialized with other site mutations.
+Administrators can connect GitHub or GitLab under **Settings → Instance**. Provider access tokens are encrypted at rest, are never returned to the browser, and are used to discover repositories and authenticate private HTTPS clones without embedding credentials in the stored Git URL or command line. Manual HTTPS/SSH repository URLs and deploy keys remain available. Set the externally reachable **Public SHAM URL** in the same panel and SHAM will create or repair the matching provider push webhook after successful Git deployments. The provider token must have the provider's repository/webhook permissions. If the dashboard has no public origin, leave that setting blank and configure the signed webhook manually.
+
+A repository can trigger deployment through `POST /api/hooks/deploy/:id`. GitHub and SHAM-style senders use `X-Hub-Signature-256: sha256=<hex HMAC-SHA256>` or `X-SHAM-Signature: sha256=<hex HMAC-SHA256>` over the raw request body; GitLab uses its `X-Gitlab-Token` secret. Automatic provider setup generates and encrypts `DEPLOY_WEBHOOK_SECRET` for the site. For manual setup, add that variable with Build or Both scope yourself. Webhooks are rate-limited, branch-filtered, timing-safe authenticated, deduplicated by the provider delivery/event UUID, and serialized with other site mutations.
 
 ### Environments and attached services
 
-Per-site environment variables support development, staging, and production scopes. Secret values are encrypted at rest and are never returned to the browser. Reusable database profiles attach an encrypted connection string to a selected environment variable without provisioning or managing the external database itself. Runtime configuration changes require a restart or a new release activation.
+Per-site environment variables support development, staging, and production scopes. Secret values are encrypted at rest and are never returned to the browser. The editor supports `.env` paste/import and server-side copying from another site/environment without revealing encrypted values to the client. Reusable database profiles attach an encrypted connection string to a selected environment variable without provisioning or managing the external database itself. Runtime configuration changes require a restart or a new release activation.
+
+### Reverse-proxy sites
+
+Choose **Reverse proxy** when SHAM should manage a hostname, TLS, access policy, statistics, and observability for a service it does not launch itself. Upstream targets must be valid `http://` or `https://` URLs without embedded credentials; LAN IPs and hostnames are supported. SHAM applies the same request accounting, firewall, security headers, maintenance mode, domain routing, Cloudflare Tunnel, and WebSocket handling used by hosted sites, while enforcing bounded upstream request timeouts.
 
 ### Scheduled jobs
 
@@ -361,7 +370,8 @@ SHAM records statistics at the public listener for static and Node.js sites:
 - Total response time and average response time.
 - Last request time.
 - Daily requests, bytes, and errors for the overview chart.
-- Most recently observed visitor IP addresses.
+- Most recently observed visitor IP addresses, exact user agents, and client classification (`browser`, `search`, `crawler`, or `llm`) when full-IP storage is enabled.
+- One-click blocking of actionable visitor IPs through the selected site's existing firewall configuration, with unblock controls in the site Security workspace.
 - Country request and visitor totals, plus an overview traffic map.
 
 Statistics are accumulated in memory and written to SQLite in short batches to avoid a synchronous database write for every request. They survive restarts; the flush interval is configurable. Daily detail is indexed by date and retained for 400 days, while lifetime totals remain available for each site. Visitor detail is bounded to the 5,000 most recently updated IP/country rows per site.
@@ -372,7 +382,7 @@ The traffic map uses simplified Natural Earth country boundaries projected with 
 
 Obfuscation is deliberately conservative. SHAM does not mangle top-level names or properties, preserves function and class names, avoids Terser unsafe transforms, and serves the original file when transformation itself fails. It still cannot prove runtime compatibility for code that uses `eval`, the `Function` constructor, string timers, generated source, function-source inspection, or dynamic global-name lookups. Enabling obfuscation therefore requires an explicit acknowledgement. Existing sites can run a bounded compatibility report before saving, and SHAM warns again when obfuscation is enabled or obfuscated content is replaced. Always test the deployed site. Obfuscation is not encryption or a security boundary.
 
-Country data is available when requests arrive through a trusted Cloudflare edge or reverse proxy that supplies `CF-IPCountry`; direct requests are recorded as country `Unknown`. IP addresses are personal data in many jurisdictions. Operators are responsible for providing suitable notice, access controls, retention choices, and legal basis for collection.
+Country data is available when requests arrive through a trusted Cloudflare edge or reverse proxy that supplies `CF-IPCountry`; direct requests are recorded as country `Unknown`. SHAM recognizes common AI/LLM crawlers (for example OpenAI, Anthropic, Perplexity, Google-Extended, Bytespider, Common Crawl, Cohere, Amazon, and Apple extended crawlers), search crawlers, and generic automation from their user agents. Classification is operational metadata rather than proof of identity and can be spoofed. IP addresses and user agents can be personal data in many jurisdictions. Operators are responsible for providing suitable notice, access controls, retention choices, and legal basis for collection.
 
 ## Security, recovery, and performance
 
@@ -675,7 +685,7 @@ Sites and files:
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/api/sites` | List sites and runtime state. |
-| `POST` | `/api/sites` | Upload a static or Node.js site. |
+| `POST` | `/api/sites` | Create an upload, Git, or reverse-proxy site. |
 | `PUT` | `/api/sites/:id` | Update configuration. |
 | `PATCH` | `/api/sites/:id/toggle` | Start or stop. |
 | `POST` | `/api/sites/:id/restart` | Restart. |
@@ -688,6 +698,7 @@ Sites and files:
 | `DELETE` | `/api/sites/:id/files` | Delete one file. |
 | `DELETE` | `/api/sites/:id` | Delete a site and its files. |
 | `GET` | `/api/statistics` | Aggregate and per-site traffic statistics. |
+| `POST/DELETE` | `/api/sites/:id/firewall/ban-ip` | Add or remove an exact IP from a site's firewall block list. |
 | `GET` | `/api/performance` | Authenticated live performance history and alerts. |
 | `GET/POST` | `/api/sites/:id/snapshots` | List or create restore points. |
 | `POST` | `/api/sites/:id/snapshots/:snapshotId/restore` | Restore a snapshot with an automatic rollback point. |
@@ -698,11 +709,13 @@ Operations:
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/api/sites/:id/operations` | Read release, environment, job, preview, and attachment state. |
+| `GET` | `/api/sites/:id/deployments` | Read deployment history and retained rollback linkage. |
 | `POST` | `/api/sites/:id/deploy/git` | Build and activate an atomic Git release. |
 | `POST` | `/api/hooks/deploy/:id` | HMAC-authenticated repository webhook deployment. |
 | `POST` | `/api/sites/:id/releases/:releaseId/rollback` | Activate a retained release. |
 | `POST/DELETE` | `/api/sites/:id/previews` | Create or remove an expiring preview. |
 | `GET/PUT` | `/api/sites/:id/environment` | Read metadata or save encrypted environment variables. |
+| `POST` | `/api/sites/:id/environment/copy` | Copy environment variables server-side from another site/environment. |
 | `GET/POST` | `/api/sites/:id/jobs` | Manage scheduled jobs. |
 | `POST` | `/api/admin/backups/run` | Run an external backup immediately. |
 | `GET` | `/api/runtime-logs/search` | Search bounded structured logs. |
@@ -716,6 +729,9 @@ Integrations and plugins:
 | Method | Route | Purpose |
 |---|---|---|
 | `POST` | `/api/admin/sites/:id/cloudflare` | Create or update a proxied DNS record. |
+| `GET` | `/api/admin/git-providers` | Read GitHub/GitLab connection status. |
+| `PUT` | `/api/admin/git-providers/:provider` | Connect, replace, or clear an encrypted provider token. |
+| `GET` | `/api/admin/git-providers/:provider/repositories` | Discover repositories for a connected provider. |
 | `POST` | `/api/admin/sites/:id/certificate` | Issue a certificate and enable SSL. |
 | `POST` | `/api/admin/certificates/renew` | Renew certificates. |
 | `GET` | `/api/plugins` | List installed plugins. |
@@ -746,7 +762,8 @@ Top-level dependency versions are pinned exactly. The Docker build runs `npm aud
 
 ```text
 sham/
-├── public/                  Dashboard and downloadable plugin examples
+├── public/                  Dashboard shell, styles, and downloadable plugin examples
+│   └── js/                  Build-free browser modules by product area
 ├── src/
 │   ├── config.js            Paths and environment configuration
 │   ├── db.js                SQLite schema and migrations
@@ -762,9 +779,15 @@ sham/
 │   ├── plugin-signing.js    Signed package verification
 │   ├── plugin-manager.js    Plugin install, lifecycle, settings, and API
 │   ├── minify-worker.js     Off-thread static asset transformations
-│   ├── site-manager.js      Static/Node runtimes, proxying, minification, stats
+│   ├── git-providers.js     Encrypted GitHub/GitLab connections and clone credentials
+│   ├── visitor-intelligence.js Automated-client classification and actionable-IP checks
+│   ├── sites/               Site core, delivery, runtime, proxying, minification, and stats
+│   ├── operations/          Deployments, configuration, jobs, backups, and observability
+│   ├── routes/              Site, operations, and administrator HTTP route families
+│   ├── site-manager.js      Compatibility facade for the modular site runtime
+│   ├── operations-manager.js Compatibility facade for modular operations
 │   ├── upload-utils.js      Safe atomic project installation and worker entry
-│   └── server.js            Dashboard API and entry point
+│   └── server.js            Dashboard composition, auth, middleware, and startup
 ├── examples/
 │   ├── hello-site/
 │   ├── node-server/

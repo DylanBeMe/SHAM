@@ -5,8 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const root = path.resolve(__dirname, '..');
-const source = (file) => fs.readFileSync(path.join(root, file), 'utf8');
+const { root, source } = require('./source-tree');
 
 const { validateSiteInput } = require('../src/validation');
 const { validatePluginArchiveFile } = require('../src/plugin-archive');
@@ -80,10 +79,13 @@ test('compatibility scanner is bounded and rejects symlink races', () => {
   assert.match(audit, /lineStarts/);
 });
 
-test('package includes the generated map and scanner in syntax checks', () => {
+test('package syntax check recursively covers source and browser modules', () => {
   const pkg = JSON.parse(source('package.json'));
-  assert.match(pkg.scripts.check, /src\/obfuscation-audit\.js/);
-  assert.match(pkg.scripts.check, /public\/world-map\.js/);
+  assert.match(pkg.scripts.check, /scripts\/check-syntax\.js/);
+  const checker = source('scripts/check-syntax.js');
+  assert.match(checker, /path\.join\(root, 'src'\)/);
+  assert.match(checker, /path\.join\(root, 'public'\)/);
+  assert.match(checker, /entry\.name\.endsWith\('\.js'\)/);
 });
 
 test('plugin uploads are validated on both client and server before extraction', async () => {

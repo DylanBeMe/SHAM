@@ -3,8 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const root = path.resolve(__dirname, '..');
-const read = (file) => fs.readFileSync(path.join(root, file), 'utf8');
+const { root, source: read } = require('./source-tree');
 
 function routeLines(server) {
   return server.split('\n').filter((line) => /app\.(?:get|post|put|patch|delete|all)\('\/?/.test(line));
@@ -135,7 +134,10 @@ test('all static UI references are reachable and ARIA relationships resolve', ()
   }
   const nav = new Set([...html.matchAll(/class="nav-item[^"\n]*"[^>]*data-section="([^"]+)"/g)].map((match) => match[1]));
   const panels = new Set([...html.matchAll(/id="section-([^"]+)"/g)].map((match) => match[1]));
-  assert.deepEqual([...nav].sort(), [...panels].sort());
+  for (const section of nav) assert.ok(panels.has(section), `nav section ${section} has no panel`);
+  for (const section of ['admin', 'documentation', 'performance', 'site-workspace']) {
+    assert.ok(panels.has(section), `programmatic section ${section} is missing`);
+  }
 });
 
 test('dashboard themes, panels, overlays, and responsive controls share coherent layout rules', () => {

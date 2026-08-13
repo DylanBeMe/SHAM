@@ -46,19 +46,16 @@
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-brand"><img class="brand-mark small" src="logo.svg" alt=""><div><strong>SHAM</strong><span>Hosting console</span></div></div>
       <nav class="nav-list" aria-label="Dashboard">
-        <button class="nav-item active" data-section="overview" type="button" aria-current="page"><span>⌂</span>Overview</button>
+        <button class="nav-item active" data-section="overview" type="button" aria-current="page"><span>⌂</span>Dashboard</button>
         <button class="nav-item" data-section="sites" type="button"><span>◫</span>Sites</button>
-        <button class="nav-item" data-section="activity" type="button"><span>⌁</span>Activity</button>
-        <button class="nav-item" data-section="performance" type="button"><span>⌁</span>Performance</button>
+        <button class="nav-item" data-section="activity" type="button"><span>⌁</span>Observability</button>
         <button class="nav-item" data-section="security" type="button"><span>⌾</span>Security</button>
-        <button class="nav-item" data-section="plugins" type="button"><span>◇</span>Plugins</button>
+        <button class="nav-item" data-section="plugins" type="button"><span>◇</span>Extensions</button>
         <div id="plugin-nav" class="plugin-nav"></div>
-        <button class="nav-item admin-only" data-section="operations" type="button"><span>⇄</span>Operations</button>
-        <button class="nav-item" data-section="documentation" type="button"><span>?</span>Documentation</button>
-        <button id="admin-nav" class="nav-item" data-section="admin" type="button" hidden><span>⚙</span>Instance</button>
+        <button class="nav-item admin-only" data-section="operations" type="button"><span>⚙</span>Settings</button>
       </nav>
       <div class="sidebar-footer">
-        <button id="theme-button" class="icon-button" type="button" title="Appearance" aria-label="Customize appearance">◐</button><a class="icon-button license-link" href="/LICENSE" target="_blank" rel="noopener" title="AGPL license" aria-label="View AGPL license">ⓘ</a>
+        <button id="help-button" class="icon-button" type="button" title="Documentation" aria-label="Open documentation">?</button><button id="command-button" class="icon-button" type="button" title="Command palette (Ctrl/Cmd+K)" aria-label="Open command palette">⌘</button><button id="theme-button" class="icon-button" type="button" title="Appearance" aria-label="Customize appearance">◐</button><a class="icon-button license-link" href="/LICENSE" target="_blank" rel="noopener" title="AGPL license" aria-label="View AGPL license">ⓘ</a>
         <div class="user-chip"><span id="user-avatar">A</span><div><strong id="user-name">Admin</strong><small id="user-role">Administrator</small></div></div>
         <button id="logout-button" class="icon-button" type="button" title="Sign out" aria-label="Sign out">↗</button>
       </div>
@@ -69,7 +66,13 @@
       <header class="mobile-header"><div class="sidebar-brand"><img class="brand-mark small" src="logo.svg" alt=""><strong>SHAM</strong></div><button id="mobile-menu" class="icon-button" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">☰</button></header>
 
       <section id="section-overview" class="view-section">
-        <header class="page-header"><div><p class="eyebrow">Live instance</p><h1>Overview</h1><p class="muted">Traffic and health across every loaded site.</p></div><button id="refresh-overview" class="button secondary" type="button">Refresh</button></header>
+        <header class="page-header"><div><p class="eyebrow">Live instance</p><h1>Dashboard</h1><p class="muted">What needs attention, then traffic and health across every site.</p></div><button id="refresh-overview" class="button secondary" type="button">Refresh</button></header>
+        <div class="attention-grid" aria-label="Items requiring attention">
+          <article class="attention-card"><span>Site health</span><strong id="attention-health">All healthy</strong><small>enabled runtimes</small></article>
+          <article class="attention-card"><span>Deployments</span><strong id="attention-deployments">No failures</strong><small>last 7 days</small></article>
+          <article class="attention-card"><span>Active alerts</span><strong id="attention-alerts">None</strong><small>performance and safety</small></article>
+          <article class="attention-card"><span>Automated traffic</span><strong id="attention-automation">0 requests</strong><small>crawlers, scrapers and LLMs</small></article>
+        </div>
         <div class="stats-grid overview-stats">
           <article class="stat-card"><span>Total requests</span><strong id="overview-requests">0</strong><small id="overview-sites">0 configured sites</small></article>
           <article class="stat-card"><span>Unique IPs</span><strong id="overview-visitors">0</strong><small>recorded visitors</small></article>
@@ -83,20 +86,37 @@
         </div>
         <div class="traffic-intelligence-grid">
           <article class="panel map-panel"><div class="panel-heading"><div><h2>Traffic origins</h2><p class="muted">Country distribution from trusted Cloudflare geolocation data. Unknown traffic is reported separately.</p></div></div><div id="traffic-map" class="traffic-map" aria-label="World traffic map"></div><div id="traffic-map-legend" class="map-legend" aria-label="Traffic intensity legend"></div><p id="traffic-map-status" class="map-status muted" aria-live="polite"></p><div id="country-ranking" class="country-ranking"></div></article>
-          <article class="panel"><div class="panel-heading"><div><h2>Recent IP activity</h2><p class="muted">Most recently seen addresses across all sites.</p></div></div><div class="table-wrap visitor-table-wrap"><table><thead><tr><th>IP address</th><th>Country</th><th>Site</th><th>Requests</th><th>Last seen</th></tr></thead><tbody id="visitor-table"></tbody></table></div></article>
+          <article class="panel"><div class="panel-heading"><div><h2>Recent IP activity</h2><p class="muted">Inspect browsers, scrapers, search crawlers and LLM clients, then ban abusive addresses directly.</p></div><div id="client-intelligence" class="client-intelligence"></div></div><div class="table-wrap visitor-table-wrap"><table><thead><tr><th>IP address</th><th>Client</th><th>User agent</th><th>Country</th><th>Site</th><th>Requests</th><th>Last seen</th><th></th></tr></thead><tbody id="visitor-table"></tbody></table></div></article>
         </div>
         <div id="plugin-dashboard" class="plugin-dashboard"></div>
       </section>
 
       <section id="section-sites" class="view-section" hidden>
-        <header class="page-header"><div><p class="eyebrow">Orchestrator</p><h1>Sites</h1><p class="muted">Run static assets or a managed <code>node server.js</code> process.</p></div><button id="new-site-button" class="button primary" type="button">＋ New site</button></header>
+        <header class="page-header"><div><p class="eyebrow">Orchestrator</p><h1>Sites</h1><p class="muted">Deploy static builds, Node.js services, or reverse-proxy existing applications.</p></div><button id="new-site-button" class="button primary" type="button">＋ New site</button></header>
         <div class="section-toolbar"><div><h2>Deployments</h2><p id="site-summary" class="muted">No sites configured.</p></div><button id="refresh-sites" class="button secondary" type="button">Refresh</button></div>
         <div id="empty-sites" class="empty-state"><div class="empty-icon">⌁</div><h2>Deploy your first project</h2><p>Upload a ZIP or folder containing a static site or Node.js application.</p><button class="button primary" data-open-new-site type="button">Upload project</button></div>
         <div id="site-grid" class="site-grid" aria-live="polite"></div>
       </section>
 
+      <section id="section-site-workspace" class="view-section" hidden>
+        <header class="page-header site-workspace-header">
+          <div><button id="site-workspace-back" class="text-button" type="button">← Sites</button><p class="eyebrow">Site workspace</p><h1 id="site-workspace-title">Site</h1><p id="site-workspace-url" class="muted"></p></div>
+          <div class="workspace-actions"><span id="site-workspace-status" class="status-pill">Stopped</span><button id="site-workspace-open" class="button secondary" type="button">Open site</button><button id="site-workspace-restart" class="button primary" type="button">Restart</button></div>
+        </header>
+        <div class="workspace-tabs" role="tablist" aria-label="Site workspace">
+          <button class="tab active" data-site-workspace-tab="overview" type="button">Overview</button><button class="tab" data-site-workspace-tab="deployments" type="button">Deployments</button><button class="tab" data-site-workspace-tab="logs" type="button">Logs</button><button class="tab" data-site-workspace-tab="files" type="button">Files</button><button class="tab" data-site-workspace-tab="networking" type="button">Networking</button><button class="tab" data-site-workspace-tab="security" type="button">Security</button><button class="tab" data-site-workspace-tab="settings" type="button">Settings</button>
+        </div>
+        <section id="site-workspace-overview" class="workspace-panel"></section>
+        <section id="site-workspace-deployments" class="workspace-panel" hidden><div class="section-toolbar"><div><h2>Deployment history</h2><p class="muted">Commits, uploads, rollbacks and reverse-proxy configuration changes.</p></div><button id="workspace-deploy" class="button primary admin-only" type="button">Deploy Git</button></div><div id="workspace-deployment-list" class="deployment-list"></div></section>
+        <section id="site-workspace-logs" class="workspace-panel" hidden><div class="section-toolbar"><div><h2>Runtime logs</h2><p class="muted">Recent process and lifecycle output for this site.</p></div><button id="workspace-refresh-logs" class="button secondary" type="button">Refresh</button></div><div id="workspace-log-list" class="event-list"></div></section>
+        <section id="site-workspace-files" class="workspace-panel" hidden><article class="panel"><h2>Project files</h2><p class="muted">Browse, edit, replace and restore files with the existing SHAM file manager.</p><button id="workspace-open-files" class="button primary" type="button">Open file manager</button></article></section>
+        <section id="site-workspace-networking" class="workspace-panel" hidden></section>
+        <section id="site-workspace-security" class="workspace-panel" hidden></section>
+        <section id="site-workspace-settings" class="workspace-panel" hidden><article class="panel"><h2>Site settings</h2><p class="muted">Edit runtime, build, delivery, firewall and advanced settings.</p><button id="workspace-edit-site" class="button primary" type="button">Edit settings</button></article></section>
+      </section>
+
       <section id="section-activity" class="view-section" hidden>
-        <header class="page-header"><div><p class="eyebrow">Runtime feed</p><h1>Activity</h1><p class="muted">Process output, lifecycle events, failures, and administrative changes.</p></div><button id="refresh-activity" class="button secondary" type="button">Refresh</button></header>
+        <header class="page-header"><div><p class="eyebrow">Runtime feed</p><h1>Observability</h1><p class="muted">Runtime events, logs, metrics, alerts and audit history in one place.</p></div><div class="inline-actions"><button id="open-performance" class="button secondary" type="button">Metrics & alerts</button><button id="refresh-activity" class="button secondary" type="button">Refresh</button></div></header>
         <div class="activity-columns"><article class="panel"><div class="panel-heading"><h2>Runtime events</h2><span class="status-dot live"></span></div><div id="runtime-events" class="event-list"></div></article><article id="audit-panel" class="panel" hidden><div class="panel-heading"><h2>Audit log</h2><span class="badge">Admin</span></div><div id="audit-events" class="event-list"></div></article></div>
       </section>
 
@@ -248,7 +268,7 @@ exports.activate = ({ data, settings, log }) =&gt; ({
                 <label class="span-2"><span>Repository URL</span><input id="git-url" autocomplete="off" placeholder="https://github.com/example/project.git"></label>
                 <label><span>Branch or tag</span><input id="git-branch" value="main"></label>
                 <label><span>Deploy key</span><textarea id="git-deploy-key" rows="3" placeholder="Optional private key; used once and never saved"></textarea></label>
-                <label class="checkbox-line span-2"><input id="git-install-dependencies" type="checkbox"><span>Install production dependencies before activation</span></label>
+                <label class="checkbox-line span-2"><input id="git-install-dependencies" type="checkbox"><span>Install production dependencies before activation</span></label><label class="span-2"><span>Install command</span><input id="git-install-command" autocomplete="off" placeholder="npm ci"></label><label class="span-2"><span>Build command</span><input id="git-build-command" autocomplete="off" placeholder="npm run build"></label><label class="span-2"><span>Build output directory</span><input id="git-build-output" autocomplete="off" placeholder="dist"></label>
                 <div class="form-actions span-2"><button id="git-deploy" class="button primary" type="submit">Deploy release</button><button id="create-preview" class="button secondary" type="button">Create preview</button><a id="export-site-config" class="button ghost" href="#">Export config</a><button id="import-site-config" class="button ghost" type="button">Import config</button><input id="import-site-config-file" type="file" accept="application/json,.json" hidden></div>
               </form>
             </article>
@@ -258,7 +278,7 @@ exports.activate = ({ data, settings, log }) =&gt; ({
 
         <div id="operations-configuration" class="operations-tab-panel" role="tabpanel" aria-labelledby="operations-tab-configuration" hidden>
           <div class="operations-grid">
-            <article class="panel"><div class="panel-heading"><div><h2>Environment variables</h2><p class="muted">Secrets are encrypted and never returned to the browser after saving.</p></div><button id="add-env-row" class="button secondary" type="button">＋ Variable</button></div><form id="environment-form"><div id="environment-rows" class="config-row-list"></div><div class="form-actions"><button class="button primary" type="submit">Save and restart</button></div></form><p class="notice">Add <code>DEPLOY_WEBHOOK_SECRET</code> with Build or Both scope to enable signed Git push deployments. Send an HMAC-SHA256 signature in <code>X-Hub-Signature-256</code>.</p></article>
+            <article class="panel"><div class="panel-heading"><div><h2>Environment variables</h2><p class="muted">Secrets are encrypted and never returned to the browser after saving.</p></div><div class="inline-actions"><button id="paste-env" class="button secondary" type="button">Paste .env</button><button id="add-env-row" class="button secondary" type="button">＋ Variable</button></div></div><div class="filter-row env-copy-row"><select id="copy-env-site" aria-label="Source site for environment variables"><option value="">Copy variables from another site…</option></select><button id="copy-env" class="button ghost" type="button">Copy variables</button></div><form id="environment-form"><div id="environment-rows" class="config-row-list"></div><div class="form-actions"><button class="button primary" type="submit">Save and restart</button></div></form><p class="notice">Connected GitHub/GitLab repositories get an encrypted <code>DEPLOY_WEBHOOK_SECRET</code> automatically when a public SHAM URL is configured. For manual webhooks, add the variable with Build or Both scope and authenticate the provider request as documented.</p></article>
             <article class="panel"><div class="panel-heading"><div><h2>Database profiles</h2><p class="muted">Attach encrypted connection strings as environment variables.</p></div></div><div id="site-database-profiles" class="check-list"></div><div class="form-actions"><button id="save-site-databases" class="button primary" type="button">Save attachments</button></div></article>
           </div>
         </div>
@@ -278,8 +298,51 @@ exports.activate = ({ data, settings, log }) =&gt; ({
             <div id="cloudflare-tunnel-list" class="connector-list"></div>
             <p class="notice">Configure a connector from <strong>Sites → Site settings → Cloudflare Tunnel</strong>. Public hostnames and origin routes remain managed in Cloudflare Zero Trust.</p>
           </article>
+          <article class="panel git-provider-panel">
+            <div class="panel-heading"><div><p class="eyebrow">Source control</p><h2>Git provider connections</h2><p class="muted">Connect GitHub or GitLab with a repository-read token. Tokens are encrypted at rest, never returned to the browser, and are not placed in Git command-line arguments.</p></div></div>
+            <div class="git-provider-list">
+              <div class="git-provider-row" data-git-provider-row="github"><div><strong>GitHub</strong><span id="git-provider-github-status" class="muted">Not connected</span></div><input id="git-provider-github-token" type="password" autocomplete="new-password" placeholder="Fine-grained or classic access token" aria-label="GitHub access token"><div class="inline-actions"><button class="button secondary" data-git-provider-save="github" type="button">Connect</button><button class="button danger" data-git-provider-clear="github" type="button">Disconnect</button></div></div>
+              <div class="git-provider-row" data-git-provider-row="gitlab"><div><strong>GitLab</strong><span id="git-provider-gitlab-status" class="muted">Not connected</span></div><input id="git-provider-gitlab-token" type="password" autocomplete="new-password" placeholder="Personal access token" aria-label="GitLab access token"><div class="inline-actions"><button class="button secondary" data-git-provider-save="gitlab" type="button">Connect</button><button class="button danger" data-git-provider-clear="gitlab" type="button">Disconnect</button></div></div>
+            </div>
+            <div class="filter-row git-webhook-settings"><input id="git-webhook-base-url" type="url" placeholder="https://sham.example.com" aria-label="Public SHAM URL for provider webhooks"><button id="save-git-webhook-url" class="button secondary" type="button">Save public URL</button></div>
+            <p class="notice">For private HTTPS clones, SHAM automatically uses the matching connected provider. Set the externally reachable SHAM origin above to let SHAM create or repair provider push webhooks after Git deployments. SSH repositories can still use the per-deployment deploy key field.</p>
+          </article>
           <div class="operations-grid">
-            <article class="panel"><div class="panel-heading"><div><h2>External backups</h2><p class="muted">Create encrypted restic backups or transfer archives to local, S3-compatible, or SFTP storage.</p></div><button id="run-backup" class="button primary" type="button">Run backup</button></div><form id="backup-form" class="form-grid compact-grid"><label><span>Provider</span><select id="backup-provider"><option value="local">Local filesystem</option><option value="restic">Restic</option><option value="s3">S3-compatible</option><option value="sftp">SFTP</option></select></label><label><span>Schedule</span><input id="backup-schedule" value="0 2 * * *"></label><label class="span-2"><span>Destination / repository</span><input id="backup-destination" autocomplete="off"></label><label><span>Retention count</span><input id="backup-retention" type="number" min="1" max="365" value="14"></label><label class="checkbox-line"><input id="backup-enabled" type="checkbox"><span>Enable scheduled backups</span></label><label class="span-2"><span>Provider options (JSON)</span><textarea id="backup-options" rows="5" spellcheck="false">{}</textarea><small id="backup-secret-status">Credentials entered here are encrypted and are never returned by the API.</small></label><div class="form-actions span-2"><button class="button primary" type="submit">Save backup settings</button></div></form><div id="backup-list" class="event-list"></div></article>
+            <article class="panel">
+              <div class="panel-heading"><div><h2>External backups</h2><p class="muted">Create verified backups to local storage, Restic, S3-compatible storage, or SFTP without editing provider JSON.</p></div><button id="run-backup" class="button primary" type="button">Run backup</button></div>
+              <form id="backup-form" class="form-grid compact-grid">
+                <label><span>Provider</span><select id="backup-provider"><option value="local">Local filesystem</option><option value="restic">Restic</option><option value="s3">S3-compatible</option><option value="sftp">SFTP</option></select></label>
+                <label><span>Schedule</span><input id="backup-schedule" value="0 2 * * *"></label>
+                <label><span>Retention count</span><input id="backup-retention" type="number" min="1" max="365" value="14"></label>
+                <label class="checkbox-line"><input id="backup-enabled" type="checkbox"><span>Enable scheduled backups</span></label>
+                <div id="backup-local-fields" class="subgrid span-2 backup-provider-fields">
+                  <label class="span-2"><span>External directory</span><input id="backup-local-destination" autocomplete="off" placeholder="/mnt/offsite/sham"><small>Optional. Leave blank to keep verified archives only in SHAM's protected backup directory.</small></label>
+                </div>
+                <div id="backup-restic-fields" class="subgrid span-2 backup-provider-fields" hidden>
+                  <label class="span-2"><span>Repository</span><input id="backup-restic-repository" autocomplete="off" placeholder="s3:s3.example.com/bucket/sham"></label>
+                  <label class="span-2"><span>Repository password</span><input id="backup-restic-password" type="password" autocomplete="new-password" placeholder="Leave blank to preserve the saved password"></label>
+                </div>
+                <div id="backup-s3-fields" class="subgrid span-2 backup-provider-fields" hidden>
+                  <label class="span-2"><span>Bucket path</span><input id="backup-s3-destination" autocomplete="off" placeholder="s3://bucket/sham"></label>
+                  <label><span>Endpoint URL</span><input id="backup-s3-endpoint" autocomplete="off" placeholder="https://s3.example.com"></label>
+                  <label><span>Region</span><input id="backup-s3-region" autocomplete="off" placeholder="eu-west-1"></label>
+                  <label><span>Access key</span><input id="backup-s3-access-key" type="password" autocomplete="new-password" placeholder="Leave blank to preserve"></label>
+                  <label><span>Secret key</span><input id="backup-s3-secret-key" type="password" autocomplete="new-password" placeholder="Leave blank to preserve"></label>
+                  <label class="span-2"><span>Session token</span><input id="backup-s3-session-token" type="password" autocomplete="new-password" placeholder="Optional; leave blank to preserve"></label>
+                </div>
+                <div id="backup-sftp-fields" class="subgrid span-2 backup-provider-fields" hidden>
+                  <label><span>Host</span><input id="backup-sftp-host" autocomplete="off" placeholder="backup.example.com"></label>
+                  <label><span>Port</span><input id="backup-sftp-port" type="number" min="1" max="65535" placeholder="22"></label>
+                  <label><span>User</span><input id="backup-sftp-user" autocomplete="off" placeholder="backup"></label>
+                  <label><span>Remote path</span><input id="backup-sftp-remote-path" autocomplete="off" placeholder="/srv/backups/sham"></label>
+                  <label class="span-2"><span>Private key</span><textarea id="backup-sftp-private-key" rows="4" autocomplete="off" placeholder="Leave blank to preserve the saved key"></textarea></label>
+                </div>
+                <label class="checkbox-line span-2"><input id="backup-clear-secrets" type="checkbox"><span>Clear stored credentials for the selected backup configuration</span></label>
+                <small id="backup-secret-status" class="span-2">Credentials entered here are encrypted and are never returned by the API.</small>
+                <div class="form-actions span-2"><button class="button primary" type="submit">Save backup settings</button></div>
+              </form>
+              <div id="backup-list" class="event-list"></div>
+            </article>
             <article class="panel">
               <div class="panel-heading"><div><h2>Observability and status</h2><p class="muted">Prometheus, OpenTelemetry, alert delivery, and a theme-aware public status page.</p></div></div>
               <form id="observability-form" class="form-grid compact-grid">
@@ -287,7 +350,7 @@ exports.activate = ({ data, settings, log }) =&gt; ({
                 <label><span class="field-label">New metrics token <span class="help-tip" tabindex="0" role="note" data-tooltip="Leave this blank to keep the saved token. Use a long random value and store it in your monitoring system." aria-label="Metrics token help">?</span></span><input id="prometheus-token" type="password" autocomplete="new-password"><small id="prometheus-token-status">No token is saved.</small></label>
                 <label class="checkbox-line span-2"><input id="clear-prometheus-token" type="checkbox"><span>Clear saved metrics token</span></label>
                 <label class="span-2"><span>OpenTelemetry HTTP endpoint <span class="help-tip" tabindex="0" role="note" data-tooltip="Receives only SHAM process metrics. Redirects are rejected so saved headers are never forwarded to another host; choose and protect the collector as an administrative trust boundary." aria-label="OpenTelemetry endpoint help">?</span></span><input id="otel-endpoint" type="url" placeholder="https://collector.example/v1/metrics"></label>
-                <label class="span-2"><span class="field-label">OpenTelemetry headers (JSON) <span class="help-tip" tabindex="0" role="note" data-tooltip='A JSON object of HTTP headers, for example {"Authorization":"Bearer …"}. Saved values are encrypted and are not shown again.' aria-label="OpenTelemetry headers help">?</span></span><textarea id="otel-headers" rows="3" spellcheck="false">{}</textarea><small id="otel-headers-status">No headers are saved.</small></label>
+                <div class="span-2 config-editor"><div class="panel-heading compact-heading"><div><span class="field-label">OpenTelemetry headers <span class="help-tip" tabindex="0" role="note" data-tooltip="Header values are encrypted and are not shown again. Add rows only when replacing the saved header set." aria-label="OpenTelemetry headers help">?</span></span><small id="otel-headers-status">No headers are saved.</small></div><button id="add-otel-header" class="button ghost" type="button">＋ Header</button></div><div id="otel-header-rows" class="config-row-list"></div></div>
                 <label class="checkbox-line span-2"><input id="clear-otel-headers" type="checkbox"><span>Clear saved OpenTelemetry headers</span></label>
                 <label class="checkbox-line"><input id="public-status-enabled" type="checkbox"><span>Enable public status page <span class="help-tip" tabindex="0" role="note" data-tooltip="Publishes service names and coarse health states without hostnames, ports, logs, or configuration. Keep names non-sensitive." aria-label="Public status page help">?</span></span></label>
                 <label><span>Status title</span><input id="public-status-title" maxlength="120"></label>
@@ -328,7 +391,7 @@ exports.activate = ({ data, settings, log }) =&gt; ({
             <label><span>Traffic spike multiplier</span><input id="alert-traffic" type="number" min="2" max="100" step="0.5" value="5"></label>
             <label><span>Error-rate alert (%)</span><input id="alert-errors" type="number" min="1" max="100" value="25"></label>
             <label class="checkbox-line"><input id="allow-unsigned-plugins" type="checkbox"><span>Allow unsigned plugins without per-install confirmation <span class="help-tip" tabindex="0" role="note" data-tooltip="Unsigned JavaScript plugins can execute with granted capabilities. Leave disabled unless every package is reviewed and obtained through a trusted channel." aria-label="Unsigned plugin policy help">?</span></span></label>
-            <label class="span-2"><span>Trusted Ed25519 publisher keys (plugins and SHAM updates)</span><textarea id="plugin-trusted-keys" rows="6" placeholder='[{"id":"publisher","name":"Publisher","publicKey":"-----BEGIN PUBLIC KEY-----..."}]'></textarea></label>
+            <div class="span-2 config-editor"><div class="panel-heading compact-heading"><div><span>Trusted Ed25519 publisher keys</span><small>Used for plugins and SHAM updates. Add one reviewed publisher key per row.</small></div><button id="add-plugin-trusted-key" class="button ghost" type="button">＋ Publisher key</button></div><div id="plugin-trusted-key-rows" class="config-row-list"></div></div>
             <div class="form-actions span-2"><a class="button secondary" href="/api/admin/logs/export?format=ndjson">Export runtime logs</a><button class="button primary" type="submit">Save security settings</button></div>
           </form>
           <p id="edge-status" class="notice"></p>
@@ -344,39 +407,67 @@ exports.activate = ({ data, settings, log }) =&gt; ({
 
   <dialog id="site-dialog" class="modal" aria-labelledby="site-dialog-title">
     <form id="site-form" class="modal-card large-modal">
-      <header class="modal-header"><div><p id="site-dialog-kicker" class="eyebrow">New deployment</p><h2 id="site-dialog-title">Add a site</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></header>
+      <header class="modal-header"><div><p id="site-dialog-kicker" class="eyebrow">New deployment</p><h2 id="site-dialog-title">Add a site</h2><div id="site-wizard-progress" class="wizard-progress"><span class="active">1 Source</span><span>2 Essentials</span><span>3 Advanced</span></div></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></header>
       <input id="site-id" type="hidden">
-      <section id="upload-section" class="form-section"><div id="drop-zone" class="drop-zone"><div class="drop-icon">⇧</div><strong id="upload-label">Drop a ZIP or project folder</strong><span>or choose a source</span><div class="drop-actions"><button id="choose-zip" class="button secondary" type="button">Choose ZIP</button><button id="choose-folder" class="button secondary" type="button">Choose folder</button></div><small class="upload-guidance">Use a standard, non-encrypted ZIP or a folder. One enclosing top-level folder is removed automatically; the configured entry file must exist after that.</small><input id="zip-input" type="file" accept=".zip,application/zip" hidden><input id="folder-input" type="file" webkitdirectory directory multiple hidden></div></section>
+      <section id="upload-section" class="form-section wizard-source">
+        <div class="source-selector" role="radiogroup" aria-label="Deployment source">
+          <button class="source-card active" data-site-source="upload" type="button"><strong>Upload</strong><small>ZIP or folder</small></button>
+          <button class="source-card admin-only" data-site-source="git" type="button"><strong>Git</strong><small>GitHub, GitLab or URL</small></button>
+          <button class="source-card" data-site-source="proxy" type="button"><strong>Reverse proxy</strong><small>Existing HTTP service</small></button>
+        </div>
+        <input id="site-source" type="hidden" value="upload">
+        <div class="template-picker"><span class="field-title">Template</span><div class="template-grid"><button type="button" data-site-template="static">Static HTML</button><button type="button" data-site-template="vite">Vite / React</button><button type="button" data-site-template="astro">Astro</button><button type="button" data-site-template="next">Next.js</button><button type="button" data-site-template="node">Node / Express</button><button type="button" data-site-template="proxy">Reverse proxy</button><button type="button" data-site-template="custom">Custom</button></div></div>
+        <div id="git-source-fields" class="form-grid" hidden>
+          <div class="span-2 git-repository-picker">
+            <label><span>Connected provider</span><select id="site-create-git-provider"><option value="">Paste URL manually</option><option value="github">GitHub</option><option value="gitlab">GitLab</option></select></label>
+            <button id="site-browse-git-repositories" class="button secondary" type="button">Browse repositories</button>
+          </div>
+          <label id="site-create-git-repository-row" class="span-2" hidden><span>Repository</span><select id="site-create-git-repository"><option value="">Choose a repository…</option></select></label>
+          <label class="span-2"><span>Git repository URL</span><input id="site-create-git-url" autocomplete="off" placeholder="https://github.com/example/project.git"></label>
+          <label><span>Branch or tag</span><input id="site-create-git-branch" value="main"></label>
+          <p class="muted">Connect GitHub or GitLab from Settings → Instance to browse private repositories. Provider tokens stay encrypted and are supplied to Git through process environment configuration, not command-line arguments.</p>
+        </div>
+        <div id="proxy-source-fields" class="form-grid" hidden><label class="span-2"><span>Upstream URL</span><input id="site-proxy-target" autocomplete="off" placeholder="http://192.168.1.40:2283"></label><p class="muted span-2">SHAM terminates the public listener, tracks traffic and applies firewall/TLS controls before proxying to this HTTP(S) service.</p></div><div id="drop-zone" class="drop-zone"><div class="drop-icon">⇧</div><strong id="upload-label">Drop a ZIP or project folder</strong><span>or choose a source</span><div class="drop-actions"><button id="choose-zip" class="button secondary" type="button">Choose ZIP</button><button id="choose-folder" class="button secondary" type="button">Choose folder</button></div><small class="upload-guidance">Use a standard, non-encrypted ZIP or a folder. One enclosing top-level folder is removed automatically; the configured entry file must exist after that.</small><input id="zip-input" type="file" accept=".zip,application/zip" hidden><input id="folder-input" type="file" webkitdirectory directory multiple hidden></div></section>
       <section class="form-section form-grid">
         <label class="span-2"><span>Site name</span><input id="site-name" maxlength="100" required></label>
-        <label><span class="field-label">Runtime <span class="help-tip" tabindex="0" role="note" data-tooltip="Static serves files directly. Node.js launches the configured server entry and supplies HOST and PORT." aria-label="Runtime help">?</span></span><select id="site-runtime"><option value="static">Static HTML / CSS / JS</option><option value="node">Node.js server</option></select></label>
-        <label><span class="field-label">Port <span class="help-tip" tabindex="0" role="note" data-tooltip="This listener must be unique. In Docker, publish this port or use the shared edge proxy for domain-routed traffic." aria-label="Port help">?</span></span><input id="site-port" type="number" min="1" max="65535" required></label>
-        <label><span class="field-label">Bind address <span class="help-tip" tabindex="0" role="note" data-tooltip="127.0.0.1 limits direct access to the SHAM host. 0.0.0.0 listens on every IPv4 interface and should be protected by a firewall or proxy." aria-label="Bind address help">?</span></span><input id="site-host" list="bind-options" value="127.0.0.1" required><datalist id="bind-options"><option value="127.0.0.1"><option value="0.0.0.0"><option value="localhost"><option value="::1"><option value="::"></datalist></label>
+        <label><span class="field-label">Runtime <span class="help-tip" tabindex="0" role="note" data-tooltip="Static serves files directly. Node.js launches the configured server entry and supplies HOST and PORT." aria-label="Runtime help">?</span></span><select id="site-runtime"><option value="static">Static HTML / CSS / JS</option><option value="node">Node.js server</option><option value="proxy">Reverse proxy</option></select></label>
+        <label class="advanced-only"><span class="field-label">Port <span class="help-tip" tabindex="0" role="note" data-tooltip="This listener must be unique. In Docker, publish this port or use the shared edge proxy for domain-routed traffic." aria-label="Port help">?</span></span><input id="site-port" type="number" min="1" max="65535" required></label>
+        <label class="advanced-only"><span class="field-label">Bind address <span class="help-tip" tabindex="0" role="note" data-tooltip="127.0.0.1 limits direct access to the SHAM host. 0.0.0.0 listens on every IPv4 interface and should be protected by a firewall or proxy." aria-label="Bind address help">?</span></span><input id="site-host" list="bind-options" value="127.0.0.1" required><datalist id="bind-options"><option value="127.0.0.1"><option value="0.0.0.0"><option value="localhost"><option value="::1"><option value="::"></datalist></label>
         <label><span>Domain</span><input id="site-domain" placeholder="app.example.com"></label>
         <div id="static-fields" class="subgrid span-2">
           <label><span class="field-label">Entry file <span class="help-tip" tabindex="0" role="note" data-tooltip="Relative path served for /. For folder uploads, SHAM removes one common enclosing directory before checking this path." aria-label="Entry file help">?</span></span><input id="site-entry" value="index.html"></label>
           <label><span>Cache seconds</span><input id="site-cache" type="number" min="0" max="31536000" value="0"></label>
           <label class="checkbox-line"><input id="site-spa" type="checkbox"><span>SPA fallback</span></label>
-          <label class="checkbox-line"><input id="site-minify" type="checkbox"><span>Minify HTML, CSS, and JavaScript</span></label>
-          <div class="obfuscation-control span-2">
-            <label class="checkbox-line"><input id="site-obfuscate" type="checkbox"><span>Obfuscate JavaScript in compatibility mode</span></label>
-            <div id="site-obfuscation-warning" class="notice warning" hidden>
-              <strong>Obfuscation can still change runtime behavior.</strong>
-              <p>SHAM preserves top-level names, function/class names, exports, and properties, and serves the original file when transformation itself fails. Code that uses <code>eval</code>, generated source, string timers, source-text reflection, or dynamic global-name lookups can still break.</p>
-              <label class="checkbox-line"><input id="site-obfuscation-ack" type="checkbox"><span>I understand the compatibility risk and will test this site after enabling obfuscation.</span></label>
-              <div class="inline-actions"><button id="site-obfuscation-scan" class="button secondary" type="button">Run compatibility report</button><span class="muted">Available after the site is uploaded.</span></div>
-              <div id="site-obfuscation-report" class="compatibility-report" role="status" aria-live="polite"></div>
-            </div>
-          </div>
         </div>
         <div id="node-fields" class="subgrid span-2" hidden>
           <label class="span-2"><span>Node entry file</span><input id="site-node-entry" value="server.js"><small>SHAM runs <code>node &lt;entry&gt;</code> and provides PORT and HOST.</small></label>
           <label class="checkbox-line span-2"><input id="site-install" type="checkbox"><span>Run npm install --omit=dev before starting <span class="help-tip" tabindex="0" role="note" data-tooltip="Requires a package.json and registry access. Only production dependencies are installed; review package scripts because they execute as the site runtime user." aria-label="Install dependencies help">?</span></span></label>
         </div>
-        <label class="span-2"><span>Custom headers (JSON)</span><textarea id="site-headers" rows="3">{}</textarea></label>
+        <div id="build-fields" class="subgrid span-2">
+          <label class="span-2"><span>Install command</span><input id="site-install-command" autocomplete="off" placeholder="npm ci"><small>Optional. Runs after a Git clone and before the build.</small></label>
+          <label class="span-2"><span>Build command</span><input id="site-build-command" autocomplete="off" placeholder="npm run build"></label>
+          <label class="span-2"><span>Build output directory</span><input id="site-build-output" autocomplete="off" placeholder="dist"><small>For static Git deployments, SHAM publishes only this directory after a successful build.</small></label>
+        </div>
+        <label class="span-2 advanced-only"><span>Custom headers</span><textarea id="site-headers" rows="3">{}</textarea><small>Advanced JSON escape hatch. Common security headers are managed by the preset below.</small></label>
         <label class="checkbox-line"><input id="site-enabled" type="checkbox"><span>Start after upload</span></label>
         <label class="checkbox-line"><input id="site-ssl" type="checkbox"><span>Serve with installed SSL certificate</span></label>
         <label class="checkbox-line span-2"><input id="site-domain-only" type="checkbox"><span>Only accept requests for the configured domain</span><small>Rejects IP-address and other Host-header visits. It does not hide an exposed origin by itself.</small></label>
+        <details class="advanced-section span-2" id="asset-transform-options">
+          <summary><span><strong>Asset transformations</strong><small>Optional minification and JavaScript obfuscation. Keep these off unless you have tested the generated output.</small></span><span class="details-indicator">＋</span></summary>
+          <div class="advanced-content form-grid">
+            <label class="checkbox-line span-2"><input id="site-minify" type="checkbox"><span>Minify HTML, CSS, and JavaScript</span></label>
+            <div class="obfuscation-control span-2">
+              <label class="checkbox-line"><input id="site-obfuscate" type="checkbox"><span>Obfuscate JavaScript in compatibility mode</span></label>
+              <div id="site-obfuscation-warning" class="notice warning" hidden>
+                <strong>Obfuscation can still change runtime behavior.</strong>
+                <p>SHAM preserves top-level names, function/class names, exports, and properties, and serves the original file when transformation itself fails. Code that uses <code>eval</code>, generated source, string timers, source-text reflection, or dynamic global-name lookups can still break.</p>
+                <label class="checkbox-line"><input id="site-obfuscation-ack" type="checkbox"><span>I understand the compatibility risk and will test this site after enabling obfuscation.</span></label>
+                <div class="inline-actions"><button id="site-obfuscation-scan" class="button secondary" type="button">Run compatibility report</button><span class="muted">Available after the site is uploaded.</span></div>
+                <div id="site-obfuscation-report" class="compatibility-report" role="status" aria-live="polite"></div>
+              </div>
+            </div>
+          </div>
+        </details>
         <details class="advanced-section span-2" id="runtime-safety-options">
           <summary><span><strong>Performance and runtime safety</strong><small>Compression, shared edge proxy, health checks, restart protection, and quotas.</small></span><span class="details-indicator">＋</span></summary>
           <div class="advanced-content form-grid">
@@ -456,7 +547,7 @@ exports.activate = ({ data, settings, log }) =&gt; ({
         </details>
       </section>
       <p id="site-form-error" class="form-error" role="alert"></p>
-      <footer class="modal-footer"><button class="button ghost" data-close-dialog type="button">Cancel</button><button id="site-save" class="button primary" type="submit">Upload site</button></footer>
+      <footer class="modal-footer"><button class="button ghost" data-close-dialog type="button">Cancel</button><div class="wizard-actions"><button id="site-wizard-back" class="button secondary" type="button" hidden>Back</button><button id="site-wizard-next" class="button primary" type="button">Continue</button><button id="site-save" class="button primary" type="submit" hidden>Deploy site</button></div></footer>
     </form>
   </dialog>
 
@@ -503,8 +594,22 @@ exports.activate = ({ data, settings, log }) =&gt; ({
     </form>
   </dialog>
 
+  <dialog id="command-dialog" class="modal command-modal" aria-labelledby="command-title"><div class="modal-card"><header class="modal-header"><div><p class="eyebrow">Quick actions</p><h2 id="command-title">Command palette</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></header><input id="command-search" class="command-search" autocomplete="off" placeholder="Search sites and actions…" aria-label="Search commands"><div id="command-results" class="command-results" role="listbox"></div><footer class="modal-footer"><small class="muted">↑↓ navigate · Enter run · Esc close · Ctrl/Cmd+K open</small></footer></div></dialog>
+
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
   <script src="world-map.js"></script>
+  <script src="js/core.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/sites.js"></script>
+  <script src="js/site-workspace.js"></script>
+  <script src="js/file-manager.js"></script>
+  <script src="js/activity.js"></script>
+  <script src="js/plugins.js"></script>
+  <script src="js/admin.js"></script>
+  <script src="js/operations.js"></script>
+  <script src="js/appearance.js"></script>
+  <script src="js/performance.js"></script>
+  <script src="js/security.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

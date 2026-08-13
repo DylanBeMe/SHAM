@@ -4,48 +4,48 @@ This document tracks high-value additions that could make SHAM feel more like a 
 
 ## Suggested next release
 
-A strong next release could focus on these four features first:
+A strong next release could focus on finishing the remaining provider automation and deepening the features that are now present:
 
-- [ ] Git provider integration
-- [ ] First-class deployment history
+- [x] Git provider connection, repository selection, and private HTTPS clone authentication
+- [x] First-class deployment history and site workspace actions
 - [ ] Automatic Cloudflare setup and routing
-- [ ] Redesigned site overview and dashboard experience
+- [x] Redesigned site overview and dashboard experience
 
 These features reinforce each other and would make deploying, operating, and troubleshooting sites significantly smoother.
 
 ## 1. Git provider integration
 
-- [ ] Add GitHub integration.
-- [ ] Add GitLab integration.
-- [ ] Allow users to connect and disconnect provider accounts from the UI.
-- [ ] Let users select a repository and branch when creating or editing a site.
-- [ ] Add automatic deploy-on-push without requiring manual webhook setup.
-- [ ] Show the deployed commit SHA, author, commit message, and deployment duration.
+- [x] Add GitHub integration.
+- [x] Add GitLab integration.
+- [x] Allow users to connect and disconnect provider accounts from the UI.
+- [x] Let users select a repository and branch when creating a site.
+- [x] Add automatic deploy-on-push without requiring manual webhook setup when a public SHAM URL is configured.
+- [x] Show the deployed commit SHA, author, commit message, and deployment duration.
 - [ ] Link deployments back to the corresponding commit or diff in the Git provider.
-- [ ] Add a **Redeploy this commit** action.
-- [ ] Surface provider connection and webhook errors clearly in the UI.
+- [x] Add a **Redeploy this commit** action.
+- [x] Surface provider connection and webhook errors clearly in the UI.
 
 ## 2. First-class deployment history
 
-- [ ] Add a deployment timeline for each site.
+- [x] Add a deployment timeline for each site.
 - [ ] Track deployment states such as queued, building, running, failed, rolled back, and superseded.
 - [ ] Attach build and runtime logs to each deployment.
-- [ ] Show commit metadata alongside each deployment when Git integration is configured.
-- [ ] Add one-click redeploy for a previous release.
-- [ ] Add one-click rollback to a previous successful release.
-- [ ] Show deployment duration and failure reason at a glance.
+- [x] Show commit metadata alongside each deployment when Git integration is configured.
+- [x] Add one-click redeploy for a previous release.
+- [x] Add one-click rollback to a previous successful release.
+- [x] Show deployment duration and failure reason at a glance.
 - [ ] Make the currently active release easy to identify.
 
 ## 3. Environment variables and secrets UX
 
-- [ ] Replace basic environment editing with a table-style variable editor.
-- [ ] Mask secret values by default.
+- [x] Replace basic environment editing with a table-style variable editor.
+- [x] Mask secret values by default.
 - [ ] Allow users to reveal or replace individual secrets with appropriate permissions.
-- [ ] Support bulk paste/import from `.env` format.
-- [ ] Add duplicate/copy actions for moving variables between sites or environments.
-- [ ] Show which variable names changed without exposing their values.
-- [ ] Warn users when changes require a restart or redeploy.
-- [ ] Add validation for malformed variable names and duplicate keys.
+- [x] Support bulk paste/import from `.env` format.
+- [x] Add copy actions for moving variables between sites/environments without exposing secret values to the browser.
+- [x] Show which variable names changed without exposing their values.
+- [x] Warn users when changes require a restart or redeploy.
+- [x] Add validation for malformed variable names and duplicate keys.
 
 ## 4. Automatic Cloudflare setup
 
@@ -107,18 +107,16 @@ Build on the per-site Cloudflare Tunnel support so SHAM can configure the Cloudf
 
 Add presets to make common deployments faster and reduce configuration mistakes.
 
-- [ ] Add a Static Site template.
-- [ ] Add a Node.js template.
-- [ ] Add an Express template.
-- [ ] Add a Next.js template.
-- [ ] Add an Astro template.
-- [ ] Add a Vite template.
-- [ ] Add a React SPA template.
+- [x] Add a Static Site template.
+- [x] Add a Node.js / Express template.
+- [x] Add a Next.js standalone template.
+- [x] Add an Astro template.
+- [x] Add a Vite / React template.
 - [ ] Add a Hugo template.
-- [ ] Add a Reverse Proxy template.
-- [ ] Preconfigure sensible build commands, output paths, health checks, cache behavior, and SPA fallback settings per template.
-- [ ] Allow templates to be customized before the site is created.
-- [ ] Keep a custom/manual option for unsupported stacks.
+- [x] Add a Reverse Proxy template.
+- [x] Preconfigure sensible install/build commands and output paths per template.
+- [x] Allow templates to be customized before the site is created.
+- [x] Keep a custom/manual option for unsupported stacks.
 
 ## 9. Reverse-proxy sites
 
@@ -130,27 +128,27 @@ Example:
 app.example.com -> http://192.168.1.50:3000
 ```
 
-- [ ] Add a site type for externally hosted upstreams.
-- [ ] Support HTTP and HTTPS upstream URLs.
-- [ ] Support LAN IP addresses and hostnames.
-- [ ] Add upstream connection and health checks.
-- [ ] Allow SHAM-managed TLS and domains in front of reverse-proxy sites.
-- [ ] Allow Cloudflare Tunnel routing in front of reverse-proxy sites.
-- [ ] Reuse existing headers, security policy, metrics, and access-control features where possible.
+- [x] Add a site type for externally hosted upstreams.
+- [x] Support HTTP and HTTPS upstream URLs.
+- [x] Support LAN IP addresses and hostnames.
+- [x] Add upstream connection and health checks through the normal site health path.
+- [x] Allow SHAM-managed TLS and domains in front of reverse-proxy sites.
+- [x] Allow Cloudflare Tunnel routing in front of reverse-proxy sites.
+- [x] Reuse existing headers, security policy, metrics, and access-control features where possible.
 - [ ] Support optional host-header overrides.
 - [ ] Support configurable upstream timeouts.
-- [ ] Add clear errors for unreachable or invalid upstreams.
-- [ ] Add maintenance-mode support for proxied services.
+- [x] Add clear errors for invalid upstreams and runtime health failures for unreachable upstreams.
+- [x] Add maintenance-mode support for proxied services.
 
 ## 10. Dashboard redesign and command palette
 
-- [ ] Redesign the main dashboard around site health, recent deployments, and items needing attention.
-- [ ] Improve site cards with clearer status and primary actions.
-- [ ] Add global search for sites and domains.
-- [ ] Add a `Ctrl/Cmd + K` command palette.
-- [ ] Add quick actions for deploy, restart, logs, configuration, and files.
+- [x] Redesign the main dashboard around site health, recent deployments, and items needing attention.
+- [x] Improve site cards with clearer status and primary actions.
+- [x] Add global search for sites and domains through the command palette.
+- [x] Add a `Ctrl/Cmd + K` command palette.
+- [x] Add quick actions for deploy, restart, logs, configuration, and files.
 - [ ] Allow sites to be pinned or favorited.
-- [ ] Improve empty states and onboarding guidance.
-- [ ] Add a recent activity feed to the dashboard.
-- [ ] Improve responsive/mobile layouts.
-- [ ] Continue standardizing spacing, typography, icons, status badges, and destructive-action patterns.
+- [x] Improve empty states and onboarding guidance.
+- [x] Add a recent activity feed to the dashboard.
+- [x] Improve responsive/mobile layouts.
+- [x] Continue standardizing spacing, typography, status badges, and destructive-action patterns.
