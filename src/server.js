@@ -523,13 +523,13 @@ const routeContext = {
   checkPort, installUploadAsync, SITES_DIR, fs, path, operationsManager, bool, writeSiteConfig, requiredSiteFile,
   safeObfuscationWarning, uploadParts, auditObfuscationCompatibility, safeRelativePath, listSiteFilesAsync,
   readTextFileAsync, writeTextFileAsync, replaceSingleFileFromPathAsync, deleteSingleFileAsync, stageSingleFileDeletionAsync,
-  cleanupUploadedFiles, snapshotManager, dependencyScanner, serializeSiteMutation, edgeProxy, getSetting
+  cleanupUploadedFiles, snapshotManager, dependencyScanner, serializeSiteMutation, edgeProxy, getSetting, siteRows, getSiteOr404
 };
 
 const adminRouteContext = {
   app, requireAuth, requireAdmin, pluginManager, publicUser, multipart, pluginUpload, validatePluginArchiveFile, bool,
   cleanupUploadedFiles, serializePluginMutation, integrationSettings, securitySettings, getSetting, setSetting, setSecretSetting,
-  getSecretSetting, rotateMasterKey, verifyPassword, writeCloudflareCredentials, recordAudit, manager, siteRows, getSiteOr404,
+  getSecretSetting, rotateMasterKey, verifyPassword, stepUpLimiter, writeCloudflareCredentials, recordAudit, manager, siteRows, getSiteOr404,
   syncCloudflareRecord, cloudflarePortWarning, syncCloudflareFirewall, acquireCertificateOperation, releaseCertificateOperation,
   stopRunningSitesOnPort, renewalNeedsPort80, issueCertificate, hasCertificate, restoreEnabledSites, renewCertificates, db,
   activeAdminCount, registrationEnabled, integerSetting, net, crypto, edgeProxy, EDGE_HTTP_PORT, DASHBOARD_PORT

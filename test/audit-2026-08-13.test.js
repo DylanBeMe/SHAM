@@ -208,3 +208,39 @@ test('OpenTelemetry settings reject credential-bearing endpoints and unsafe head
   assert.match(observability, /OpenTelemetry endpoint is unsafe/);
   assert.equal((observability.match(/response\.body\?\.cancel\(\)\.catch/g) || []).length, 2);
 });
+
+test('extracted route modules receive every declared dependency from server wiring', () => {
+  const server = read('src/server.js');
+  const specs = [
+    ['src/routes/sites.js', 'registerSiteRoutes', 'routeContext'],
+    ['src/routes/admin.js', 'registerAdminRoutes', 'adminRouteContext'],
+    ['src/routes/operations.js', 'registerOperationsRoutes', 'operationsRouteContext']
+  ];
+
+  for (const [file, registerName, contextName] of specs) {
+    const routeSource = read(file);
+    const registerStart = routeSource.indexOf(`function ${registerName}`);
+    assert.ok(registerStart >= 0, `${registerName} is missing`);
+    const destructure = routeSource.slice(registerStart).match(/const\s*\{([\s\S]*?)\}\s*=\s*ctx;/);
+    assert.ok(destructure, `${registerName} must destructure its route context`);
+    const required = destructure[1].split(',').map((value) => value.trim()).filter(Boolean);
+
+    const context = server.match(new RegExp(`const ${contextName} = \\{([\\s\\S]*?)\\n\\};`));
+    assert.ok(context, `${contextName} is missing`);
+    const provided = context[1]
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => value.includes(':') ? value.split(':')[0].trim() : value);
+
+    assert.deepEqual(required.filter((name) => !provided.includes(name)), [], `${contextName} is missing route dependencies`);
+  }
+
+  const sites = read('src/routes/sites.js');
+  assert.match(sites, /edgeProxy, getSetting, siteRows, getSiteOr404/);
+  assert.match(server, /rotateMasterKey, verifyPassword, stepUpLimiter, writeCloudflareCredentials/);
+});
+
+test('bootstrap prints startup stacks so Docker smoke failures identify the bad route', () => {
+  assert.match(read('src/bootstrap.js'), /console\.error\(error\.stack \|\| error\.message\)/);
+});

@@ -55,7 +55,7 @@ function loadUpdateRuntime() {
         console.error(`SHAM update ${applied.version} failed and rollback also failed: ${rollbackError.message}`);
       }
     } else {
-      console.error(error.message);
+      console.error(error.stack || error.message);
     }
     process.exitCode = 1;
   }

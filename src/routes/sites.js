@@ -8,7 +8,7 @@ function registerSiteRoutes(ctx) {
     requiredSiteFile, safeObfuscationWarning, uploadParts, auditObfuscationCompatibility, safeRelativePath,
     listSiteFilesAsync, readTextFileAsync, writeTextFileAsync, replaceSingleFileFromPathAsync, deleteSingleFileAsync,
     stageSingleFileDeletionAsync, cleanupUploadedFiles, snapshotManager, dependencyScanner, serializeSiteMutation,
-    edgeProxy, getSetting
+    edgeProxy, getSetting, siteRows, getSiteOr404
   } = ctx;
 
 app.get('/api/sites', requireAuth, (_req, res) => res.json({ sites: siteRows().map((site) => ({ ...site, cloudflareTunnel: cloudflareTunnels.summary(site.id) })) }));
