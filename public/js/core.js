@@ -548,8 +548,9 @@ function commandItems() {
     });
   }
   const docs = [
-    ['Getting started', 'usage'], ['Runtimes & Docker', 'runtimes'], ['Git & CI/CD', 'git'],
-    ['API & CLI', 'api'], ['Operations & Security', 'operations'], ['Plugin development', 'development']
+    ['Getting started', 'usage'], ['Dashboard & UI', 'dashboard'], ['Runtimes & Docker', 'runtimes'],
+    ['Git & CI/CD', 'git'], ['API & CLI', 'api'], ['Configuration', 'config'],
+    ['Operations & Security', 'operations'], ['Plugin development', 'development'], ['Troubleshooting', 'troubleshooting']
   ];
   for (const [label, tabName] of docs) items.push({
     label: `Docs: ${label}`, hint: 'Documentation', keywords: `help guide ${label.toLowerCase()}`,

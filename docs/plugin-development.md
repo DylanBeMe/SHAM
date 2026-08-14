@@ -1,27 +1,35 @@
 # Plugin development
 
-SHAM supports declarative JSON plugins and JavaScript plugins. Plugins can extend dashboard UI and, when explicitly permitted, server-side actions.
+SHAM supports declarative JSON plugins and JavaScript plugins. Plugins can extend dashboard UI and, when explicitly permitted, server-side behavior.
 
-## Start with the playground
+Server-side plugin code is trusted code. Develop on a non-production SHAM instance and review permissions/source before installation.
 
-Open **Extensions → Plugin playground**.
+## Start with the Plugin playground
+
+Open **Extensions → Plugin playground** as an administrator.
 
 The playground lets you:
 
-- Edit/validate `plugin.json` with SHAM's real manifest validator.
-- Add optional browser `client.js`.
-- Preview UI registration in a sandboxed iframe.
-- Inspect the normalized manifest returned by the server.
+- Edit `plugin.json`.
+- Validate it with SHAM's real server-side manifest validator.
+- Inspect the normalized manifest.
+- Add optional browser `client.js` code.
+- Preview browser UI registration in a sandboxed iframe.
 
-The playground manifest payload is limited to 128 KiB.
+The manifest payload is bounded to 128 KiB.
 
-The preview iframe has no same-origin access and blocks network requests through its CSP. It runs with `sandbox="allow-scripts"`.
+The preview iframe:
 
-**Server plugin code is never executed in the playground.** This is intentional; a browser playground is not a safe server-code sandbox.
+- Uses `sandbox="allow-scripts"`.
+- Has no same-origin access to the SHAM dashboard.
+- Blocks network access through its preview CSP.
+- Provides development stubs rather than real privileged server APIs.
+
+**Server plugin code is never executed in the playground.** Build/test server actions on a dedicated development SHAM instance instead.
 
 ## Minimal manifest
 
-A plugin archive contains `plugin.json`.
+A plugin archive contains `plugin.json` at its root.
 
 Conceptual example:
 
@@ -43,65 +51,102 @@ Conceptual example:
 }
 ```
 
-Use the playground's default manifest as the authoritative starting shape for the current SHAM version.
+Use the playground's generated/default example as the authoritative starting shape for the exact SHAM release you are targeting.
+
+## JSON/declarative plugins
+
+Declarative plugins can expose permitted data/actions/UI without arbitrary server module execution.
+
+SQL/data declarations are validated and deliberately restricted from sensitive internal tables/operations. Do not design plugins around bypassing those boundaries.
 
 ## Browser client
 
-A plugin may expose `client.js` and register through the SHAM browser plugin API.
+A plugin can ship `client.js` and register through the SHAM browser plugin API.
 
-The production plugin API can expose helpers according to plugin permissions/context. The playground uses stubbed helpers and intentionally does not provide real server/network access.
+Production helpers depend on the plugin context/permissions. The playground provides only safe stubs, so a method visible in the preview should not be interpreted as authorization to perform that action in production.
 
-Do not assume a playground stub means a capability is permitted in production.
+Client guidelines:
+
+- Keep dashboard startup work small/asynchronous.
+- Avoid global CSS that breaks SHAM layout.
+- Use SHAM-provided UI helpers where available for dialogs/toasts/tooltips so top-layer behavior remains consistent.
+- Escape untrusted strings before inserting HTML.
+- Do not store secrets in browser plugin code.
 
 ## Server actions
 
-JavaScript plugins can declare server actions. SHAM applies:
+JavaScript plugins can define server actions when the manifest/permissions allow them.
 
-- Explicit permissions.
+SHAM applies:
+
+- Explicit permission validation.
 - Action timeouts.
 - Bounded pending work.
 - Lifecycle tracking during shutdown.
 - Optional worker isolation.
 
-Worker isolation protects the SHAM event loop from some crashes/blocks, but worker threads share the same OS process/security boundary. Do not run hostile code.
+Worker threads share the same OS process authority. They are a fault-containment mechanism, not a hostile-code sandbox.
 
 ## Permissions
 
-Request only capabilities the plugin needs. Data-related permissions are inferred/validated against declared actions for JSON plugins, and runtime APIs enforce plugin permissions.
+Request only the permissions the plugin actually needs.
 
-Users should be able to review a plugin's requested permissions before installation.
+Plugin installation should be treated like installing server software:
+
+1. Review publisher/signature.
+2. Review manifest permissions.
+3. Review server/browser source.
+4. Test on development/staging.
+5. Enable in production only after expected behavior is understood.
 
 ## Packaging
 
-Create a ZIP with `plugin.json` at the expected archive root plus any declared client/server files.
+Create a normal ZIP containing `plugin.json` at the expected archive root plus declared files.
 
 Avoid:
 
-- Nested archive-root surprises.
-- Generated dependencies that are not required.
-- Secrets/config credentials.
-- Writable host-path assumptions.
-- Network access unless the plugin explicitly needs and declares it.
+- Extra enclosing directory levels unless the plugin archive format explicitly expects them.
+- Embedded secrets.
+- Large/generated dependency trees that are unnecessary.
+- Host-path assumptions.
+- Undeclared network/data access.
 
 ## Signing
 
-SHAM supports signed plugin verification and trusted signing keys. Sign distributable plugins where possible. Unsigned plugin installation requires explicit administrator acknowledgement.
+SHAM supports signed plugin verification and trusted signing keys. Sign distributable plugins when possible.
 
-## Development loop
+Unsigned installation requires explicit administrator acknowledgement; do not train operators to ignore that warning.
 
-1. Design the manifest in Plugin playground.
+## Recommended development loop
+
+1. Draft the manifest in Plugin playground.
 2. Validate until SHAM accepts it.
-3. Preview browser UI with a small `client.js`.
-4. Build server actions outside the playground.
-5. Add permissions deliberately.
+3. Preview small browser UI code.
+4. Create server-side actions outside the playground.
+5. Add the minimum permissions required.
 6. Package the ZIP.
-7. Install only on a development SHAM instance first.
-8. Exercise shutdown/reload/error cases.
-9. Sign the final artifact.
-10. Test against `npm run release:check` if developing inside the SHAM source tree.
+7. Install on a development SHAM instance.
+8. Test enable/disable/reload/shutdown/error cases.
+9. Test any site/runtime interactions with disposable applications.
+10. Sign the release artifact.
+11. Run SHAM's test/release checks when developing inside the SHAM source repository.
+
+## Plugin API route
+
+Administrators can validate a playground manifest through:
+
+```text
+POST /api/admin/plugins/playground/validate
+```
+
+Installed plugin management endpoints are listed in [API reference](api-reference.md).
 
 ## Debugging
 
-Use runtime/plugin logs and the browser console. Keep client scripts asynchronous and avoid expensive synchronous work on dashboard load.
+Use:
 
-When a plugin UI renders floating help, dialogs, or notifications, prefer SHAM's UI helpers so top-layer/z-index behavior remains consistent with dashboard modals.
+- Browser developer console for `client.js`.
+- Plugin/runtime logs for server-side behavior.
+- Observability/audit events for lifecycle/administrative actions.
+
+When browser UI appears behind a modal/backdrop, first ensure the plugin uses current SHAM UI helpers rather than hard-coded low z-index layers.

@@ -129,16 +129,31 @@ test('CLI runtime-control commands map to explicit idempotent HTTP endpoints', (
   assert.match(cli, /timeoutMs: 10 \* 60_000/);
 });
 
-test('license and categorized documentation are included in the source release', () => {
+test('license and categorized documentation are included in the source release and in-app updates', () => {
   const server = read('src/server.js');
   const readme = read('README.md');
+  const html = read('public/index.html');
+  const core = read('public/js/core.js');
+  const updater = read('src/update-manager.js');
   assert.match(server, /app\.get\('\/LICENSE'/);
   assert.match(read('LICENSE'), /GNU AFFERO GENERAL PUBLIC LICENSE/);
-  const docs = ['getting-started.md', 'runtimes-and-docker.md', 'git-and-cicd.md', 'api-and-cli.md', 'operations-and-security.md', 'plugin-development.md', 'troubleshooting.md'];
+  const docs = [
+    'getting-started.md', 'dashboard-and-ui.md', 'runtimes-and-docker.md', 'git-and-cicd.md',
+    'api-and-cli.md', 'api-reference.md', 'operations-and-security.md', 'configuration-reference.md',
+    'plugin-development.md', 'troubleshooting.md'
+  ];
   for (const doc of docs) {
     assert.ok(fs.existsSync(path.join(ROOT, 'docs', doc)), `${doc} must ship`);
     assert.match(readme, new RegExp(doc.replace('.', '\\.')));
   }
+  for (const tab of ['usage', 'dashboard', 'runtimes', 'git', 'api', 'config', 'operations', 'development', 'troubleshooting']) {
+    assert.match(html, new RegExp(`data-doc-tab="${tab}"`));
+    assert.match(html, new RegExp(`data-doc-panel="${tab}"`));
+  }
+  assert.match(core, /\['Dashboard & UI', 'dashboard'\]/);
+  assert.match(core, /\['Configuration', 'config'\]/);
+  assert.match(core, /\['Troubleshooting', 'troubleshooting'\]/);
+  assert.match(updater, /'bin', 'docs'/);
 });
 
 test('dashboard HTML has unique IDs and label targets resolve', () => {

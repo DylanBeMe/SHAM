@@ -16,7 +16,7 @@ All notable public changes to SHAM are documented here. The project follows Sema
 - Supervised remotely managed Cloudflare Tunnel support with encrypted token storage, administrator controls, bounded restart backoff, and Docker packaging.
 - First-class Docker image source deployments plus broader Git provider connections for Bitbucket Cloud, Gitea, and Forgejo alongside GitHub and GitLab.
 - Dashboard attention-card drilldowns, a primary Performance navigation item, deeper command-palette search, and a sandboxed plugin-development playground.
-- Categorized operator/developer documentation covering runtimes, Docker/Compose, Git/CI/CD, API/CLI, operations/security, plugins, and troubleshooting.
+- Categorized operator/developer documentation covering the dashboard/UI, runtimes and Docker/Compose, Git/CI/CD, API/CLI, a grouped API reference, operations/security, environment configuration, plugins, and troubleshooting.
 
 ### Changed
 
@@ -30,6 +30,7 @@ All notable public changes to SHAM are documented here. The project follows Sema
 - Dashboard themes, administration settings, environment/Git-provider layouts, logout/license controls, tooltips, and toast stacking were aligned for consistent responsive behavior.
 - The CLI now has explicit idempotent start/stop API endpoints and operation-appropriate request timeouts.
 - Tests provide an explicit JWT secret so release checks cannot generate `data/.jwt-secret` in the source tree.
+- The root README is now a concise product/quick-start overview, while detailed reference material lives under `docs/`; in-app updates now carry `docs/` and `bin/` so the manual and CLI stay aligned with the active SHAM release.
 
 ## [1.0.0] — 2026-08-05
 

@@ -1,44 +1,65 @@
 # API and CLI
 
-SHAM's browser UI uses the same HTTP API that is available for automation. The current API prefix is `/api`.
+SHAM's dashboard uses the same HTTP API that is available for automation. This guide focuses on safe automation patterns. For a broader endpoint list, see [API reference](api-reference.md).
+
+## Base URL
+
+The JSON API lives under:
+
+```text
+/api
+```
+
+There is not yet a `/api/v1` namespace. Pin SHAM versions for critical automation and test upgrades before production rollout.
 
 ## Authentication
 
 ### Browser sessions
 
-Interactive login uses SHAM's authenticated cookie flow and same-origin protections.
+Interactive users authenticate through SHAM's session/login flow. Browser requests also participate in same-origin/security controls used by the dashboard.
 
 ### API tokens
 
-Create a token in **Security → API Tokens**. The plaintext token is shown once. SHAM stores only a hash.
+Create a token under **Security → API Tokens**.
 
-Send it as:
+The plaintext token is shown once. SHAM stores a hash, not the reusable plaintext value.
+
+Use:
 
 ```http
 Authorization: Bearer sham_pat_...
 Accept: application/json
 ```
 
-Keep tokens out of repository files and build logs.
+Never place bearer tokens in query parameters, repository files, shell history intended for sharing, or build logs.
 
-## Token scopes
+## API-token scopes
 
-Common scopes are:
+Available scopes:
 
-- `read` — read general site/status data.
-- `logs:read` — read runtime logs.
-- `deploy` — trigger Git deployment/rollback operations covered by the deployment API.
-- `sites:control` — start, stop, and restart sites.
-- `*` — unrestricted API-token scope; use only for trusted administration automation.
+| Scope | Intended use |
+|---|---|
+| `read` | General read access supported by token middleware. |
+| `logs:read` | Runtime-log reads. |
+| `deploy` | Deployment/rollback automation covered by token authorization. |
+| `sites:control` | Start/stop/restart site runtimes. |
+| `*` | Unrestricted token scope; reserve for tightly controlled administration. |
 
-Some administrator-only endpoints additionally require an administrator user/token context and may not be appropriate for unattended automation.
+Role checks still apply. A token cannot turn a non-administrator identity into an administrator.
 
-## Stable automation endpoints
+## Stable automation examples
 
 ### List sites
 
 ```http
 GET /api/sites
+```
+
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer $SHAM_TOKEN" \
+  -H "Accept: application/json" \
+  "$SHAM_URL/api/sites"
 ```
 
 ### Start a site
@@ -47,7 +68,7 @@ GET /api/sites
 POST /api/sites/:id/start
 ```
 
-Idempotent: an already-running backend is not restarted simply because `start` is called again.
+This is idempotent; calling start for an already-running site should not be used as a restart mechanism.
 
 ### Stop a site
 
@@ -55,7 +76,7 @@ Idempotent: an already-running backend is not restarted simply because `start` i
 POST /api/sites/:id/stop
 ```
 
-Idempotent: an already-stopped site remains stopped.
+Idempotent for an already-stopped site.
 
 ### Restart a site
 
@@ -75,9 +96,9 @@ Content-Type: application/json
 }
 ```
 
-A repository-controlled runtime-policy change can return HTTP `409` with code `SHAM_MANIFEST_APPROVAL_REQUIRED`.
+A changed execution policy can return `409` with a structured manifest-approval code. Review the manifest before retrying with approval.
 
-### Roll back a retained release
+### Roll back
 
 ```http
 POST /api/sites/:id/releases/:releaseId/rollback
@@ -89,7 +110,7 @@ POST /api/sites/:id/releases/:releaseId/rollback
 GET /api/runtime-logs?siteId=12&limit=200
 ```
 
-Search:
+Administrator advanced search:
 
 ```http
 GET /api/runtime-logs/search?siteId=12&q=timeout
@@ -111,31 +132,9 @@ GET /api/sites/:id/deployments
 GET /api/sites/:id/deployments/:deploymentId/logs
 ```
 
-## Other API groups
+## Bundled CLI
 
-The dashboard also exposes authenticated endpoint groups for:
-
-- Site files and content replacement.
-- Snapshots and dependency scans.
-- Environment variables and secret reveal/copy flows.
-- Scheduled jobs.
-- Database connection profiles.
-- Preview deployments.
-- Git-provider administration.
-- Backups and staged restore.
-- Alert destinations.
-- Audit export/history.
-- Cloudflare DNS/WAF/Tunnels.
-- Certbot certificate operations.
-- Plugins and the plugin manifest playground.
-- OIDC/registration/user administration.
-- API-token, TOTP, recovery-code, and passkey management.
-
-Use browser developer tools or the source route modules when developing against an endpoint that is not yet declared stable in this guide.
-
-## CLI
-
-The package exposes `sham` through `bin/sham.js`.
+The npm package exposes the `sham` executable from `bin/sham.js`.
 
 Environment:
 
@@ -156,28 +155,86 @@ sham restart <site-id>
 sham rollback <site-id> <release-id>
 ```
 
-Ordinary CLI HTTP requests have a 30-second client timeout. Git deploy commands allow up to 30 minutes and rollback commands up to 10 minutes because those endpoints can wait for builds/readiness. If your reverse proxy has a shorter request timeout, align it with your deployment workflow.
+The CLI exits non-zero when the request fails and prints API error detail when available.
 
-## Example with curl
+## CLI timeouts
+
+Current client bounds:
+
+- Ordinary/control requests: 30 seconds.
+- Git deploy: 30 minutes.
+- Rollback: 10 minutes.
+
+Deploy/rollback are longer because the server endpoint can synchronously wait for build/readiness work. Configure reverse-proxy timeouts consistently if you use synchronous CI calls.
+
+## CI example
 
 ```bash
-curl --fail-with-body   -H "Authorization: Bearer $SHAM_TOKEN"   -H "Accept: application/json"   "$SHAM_URL/api/sites"
+set -euo pipefail
+export SHAM_URL="https://sham.example.com"
+export SHAM_TOKEN="$SHAM_DEPLOY_TOKEN"
+
+sham deploy 12 --branch main
 ```
 
-```bash
-curl --fail-with-body   -X POST   -H "Authorization: Bearer $SHAM_TOKEN"   -H "Accept: application/json"   "$SHAM_URL/api/sites/12/restart"
-```
+Use a narrowly scoped CI token and a dedicated automation user where separation of duties matters.
 
-## Errors
+## Common response/error behavior
 
-JSON API errors use an `error` message. Validation failures are normally `400`; authentication failures `401`; authorization failures `403`; missing resources `404`; conflicts such as manifest approval/runtime-state transitions may use `409`; request-size limits use `413`; rate limits use `429`.
+Typical status codes:
 
-Do not parse human-readable error text when a structured `code` field is available.
+- `400` — invalid input/configuration.
+- `401` — missing/invalid authentication.
+- `403` — authenticated but not authorized.
+- `404` — missing resource/disabled route.
+- `409` — state/policy conflict, including manifest approval requirements.
+- `413` — request/upload bounds exceeded.
+- `429` — rate limit or bounded work queue is full.
+
+JSON errors generally include an `error` message. Prefer a structured `code` field when present; do not make brittle automation depend on exact human-readable error wording.
 
 ## Request limits
 
-SHAM deliberately bounds JSON bodies, multipart field counts, file counts, file sizes, archive entries, log output capture, and several list/query limits. Clients should treat `400`/`413` as configuration/input errors rather than retrying them indefinitely.
+SHAM intentionally bounds:
 
-## API compatibility
+- JSON body size.
+- Multipart field/file count.
+- Upload size.
+- Archive entry/path counts.
+- Log/process output capture.
+- Search/list limits.
+- Several worker queues/concurrency groups.
 
-There is currently no `/api/v1` versioned namespace. Pin SHAM versions for critical automation, use the documented endpoints above, and test upgrades in staging.
+Treat `400`, `413`, and `429` as input/capacity signals. Do not blindly retry non-idempotent operations.
+
+## API groups beyond the CLI
+
+The dashboard API also covers:
+
+- Site files/content replacement.
+- Dependency scans and snapshots.
+- Environment variables/secrets and copy/reveal flows.
+- Database profiles.
+- Scheduled jobs.
+- Previews and release history.
+- Git provider connections.
+- Backups and staged restore.
+- Alert destinations/audit exports.
+- Cloudflare DNS/WAF/Tunnels.
+- Certbot.
+- Plugins and the plugin playground.
+- OIDC/users/registration administration.
+- TOTP/recovery/passkeys/API tokens.
+
+See [API reference](api-reference.md) for method/path/access details.
+
+## Compatibility guidance
+
+For automation that must survive upgrades:
+
+1. Pin SHAM versions.
+2. Use documented endpoints only.
+3. Avoid depending on undocumented response fields.
+4. Check HTTP status and structured error codes.
+5. Test upgrades in staging.
+6. Treat repository-manifest changes as code-execution policy changes, not routine metadata.

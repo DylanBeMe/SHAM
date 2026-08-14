@@ -1,107 +1,200 @@
 # Operations and security
 
+This guide covers administrator workflows and the security/recovery boundaries around them.
+
 ## Settings categories
 
-Administrator Settings are grouped into:
+SHAM groups Settings into five categories.
 
-- **Delivery** — releases, previews, deployment behavior.
-- **Configuration** — environment variables and database profiles.
-- **Automation** — jobs and runtime-log workflows.
-- **Instance** — Git providers, backups, observability/export settings.
-- **Administration** — accounts, OIDC, Cloudflare, Certbot, registration, and persistent instance policy.
+| Category | Contains |
+|---|---|
+| **Delivery** | Git release/deployment behavior, previews, release controls |
+| **Configuration** | Environment variables/secrets, database profiles/service attachments |
+| **Automation** | Scheduled jobs, runtime-log workflows/search |
+| **Instance** | Git provider connections, backups, observability/export and runtime integrations |
+| **Administration** | Accounts/users, registration, OIDC, Cloudflare, Certbot, persistent administrative policy |
+
+See [Dashboard and UI](dashboard-and-ui.md) for navigation/layout behavior.
 
 ## Environment variables and secrets
 
-Environment variables are stored per site. Secret values are encrypted at rest and are not returned in ordinary API payloads.
+Environment values are per-site and can be scoped to:
 
-Use the environment-variable copy control to copy selected variables between sites. The dashboard keeps the selector and action button responsive on narrow layouts.
+- Runtime.
+- Build.
+- Both.
 
-Build-time and runtime subprocesses receive purpose-specific environment allowlists. SHAM's own JWT/master-key secrets are not intentionally forwarded into hosted applications.
+Secret values are encrypted at rest and masked in normal browser/API responses. Revealing a stored secret requires an elevated administrator flow.
 
-For containers, secret values are supplied through controlled environment-file/inherited-environment mechanisms rather than being embedded directly into a visible Docker command line.
+The environment-variable UI can copy selected values from another site. The source/target controls use the same responsive layout conventions as the rest of Settings.
+
+Build/runtime subprocesses receive purpose-specific environment allowlists. SHAM does not intentionally forward its own JWT/master-key material into hosted applications.
+
+For containers, SHAM avoids placing secret plaintext into visible Docker CLI `KEY=value` argument strings.
+
+## Database profiles
+
+Reusable database connection profiles can be defined at the administrator level and attached to sites. Treat database credentials as secrets and grant application users the minimum database privileges required.
+
+## Scheduled jobs
+
+Jobs can be created per site and run on schedule or manually.
+
+For container/Compose applications, jobs target the actual active runtime backend rather than relying on a fixed legacy container name. This matters after candidate-first release activation where container identifiers change between releases.
+
+Apply job timeout limits and avoid using scheduled jobs as an unbounded general-purpose queue.
 
 ## Backups
 
-Backups use a consistent SQLite snapshot and support configured local/off-host destinations.
+SHAM supports configured local/off-host backup destinations including workflows for Restic, S3-compatible transfer through AWS CLI, and SFTP depending on instance configuration.
+
+Back up the full SHAM data directory independently of per-site snapshots.
 
 ## Restore safety
 
 Restore is intentionally staged:
 
-1. Verify the archive exists and is an expected backup.
-2. Stream-inspect the complete tar listing.
-3. Reject traversal, absolute paths, links, special files, oversized entry names, and excessive entry counts before extraction.
-4. Extract into an isolated staging directory.
-5. Validate the extracted tree.
-6. Open the staged SQLite database read-only.
-7. Run `quick_check`.
-8. Verify core SHAM tables.
-9. Atomically swap the data directory.
-10. Preserve backup/update stores and roll back the directory swap on failure.
+1. Identify the selected backup archive.
+2. Stream-inspect the complete archive structure.
+3. Enforce entry/path/count bounds.
+4. Reject absolute/traversal paths, links, and special files before extraction.
+5. Extract into an isolated staging directory.
+6. Validate the staged tree.
+7. Open/check the staged SQLite database.
+8. Run `PRAGMA quick_check`.
+9. Verify core SHAM tables.
+10. Atomically swap the live data directory.
+11. Preserve backup/update stores as required by the restore workflow.
+12. Roll back the directory swap if activation fails.
 
-A malformed backup should never require deleting the live instance first.
+The live data directory is not deleted first and then "hoped" to restore successfully.
 
-## Monitoring and performance
+## Snapshots vs backups
 
-The **Performance** navigation item exposes live and historical metrics including CPU, memory, request/error rate, latency, connections, restart activity, and persisted p50/p95 history.
+Snapshots are per-site restore points and are useful before risky content/deployment changes. They do not replace a complete instance backup containing the database, configuration, secrets/key material, plugins, certificates, and releases.
 
-Per-site alert rules can define thresholds. Active alerts are surfaced in both Performance and the Dashboard quick views.
+## Monitoring and Performance
 
-Health-check loops, performance sampling, Cloudflare Tunnel lifecycle work, and runtime shutdown are concurrency-bounded to avoid synchronized bursts on larger hosts.
+The dedicated **Performance** page reports live host/control-plane and site metrics.
+
+Host/control-plane metrics include CPU, memory, event-loop delay, disk use, and operational queue/worker information.
+
+Site metrics include request/error rate, latency, memory/CPU where available, connections, health, and restart activity. SHAM persists per-site CPU/latency history including p50/p95 values for seven days in the current implementation.
+
+Administrators can define per-site alert rules. Active alerts also appear in the Dashboard quick-view drilldown.
+
+Health checks, performance sampling, Cloudflare Tunnel bulk lifecycle operations, and runtime shutdown use bounded concurrency to avoid avoidable synchronized bursts on larger instances.
+
+## Runtime logs and privacy
+
+Runtime output is line-buffered so arbitrary stdout/stderr chunk boundaries do not create fragmented log records. Log output capture and persisted/history workflows are bounded.
+
+Visitor-detail retention is configurable; aggregate statistics can remain useful after detailed visitor-IP records expire.
 
 ## Cloudflare
 
-SHAM can manage:
+SHAM can manage optional:
 
 - DNS records.
-- WAF/firewall synchronization.
+- Hostname-scoped WAF/firewall synchronization.
 - Per-site Cloudflare Tunnels.
-- Periodic reconciliation of opted-in records/rules.
+- Periodic reconciliation for opted-in DNS/firewall configuration.
 
-Cloudflare credentials are encrypted. Treat the token as infrastructure administration access and scope it to the smallest required zone/account permissions.
+Cloudflare credentials are encrypted. Scope API tokens to the smallest required zone/account privileges.
+
+Do not assume a proxied Cloudflare DNS record makes a publicly reachable origin private. Protect the origin listener/network separately.
 
 ## Certbot
 
-Certificate issuance/renewal coordinates with SHAM's shared port-80 edge listener. Review warnings about nonstandard public ports and ensure the hostname resolves correctly before issuance.
+SHAM can coordinate certificate issuance/renewal through the configured Certbot executable, including Cloudflare DNS workflows where configured.
+
+When using standalone HTTP validation, ensure port 80/routing is compatible with the shared edge listener and that DNS points to the correct host.
 
 ## OIDC
 
-OIDC uses Authorization Code flow with PKCE, state, nonce, JWKS signature verification, issuer/audience checks, time validation, and optional controlled user auto-provisioning.
+OIDC SSO uses Authorization Code + PKCE with:
 
-The client secret is encrypted at rest. Keep the issuer URL HTTPS and restrict auto-provisioned roles.
+- State validation.
+- Nonce validation.
+- JWKS signature verification.
+- Issuer/audience checks.
+- `azp` handling where relevant.
+- Token time checks.
+- Optional controlled auto-provisioning.
 
-## Local authentication
+Client secrets are encrypted at rest. Keep issuer endpoints HTTPS and carefully review automatic role/user provisioning policy.
 
-SHAM supports password login, TOTP, recovery codes, and WebAuthn passkeys. Administrators can manage registration policy and users from Settings → Administration.
+Local authentication remains available unless you intentionally place an external access policy around SHAM.
+
+## Local account security
+
+SHAM supports:
+
+- Password login.
+- TOTP.
+- Single-use recovery codes.
+- WebAuthn/passkeys.
+- Administrator-managed user/account policy.
+
+Store recovery codes offline. Removing a second factor should require the same care as changing a password.
 
 ## API tokens
 
-API tokens are independently revocable and scoped. Prefer them over password/session reuse for CI/CD and scripts.
+API tokens are personal, independently revocable bearer credentials intended for CLI/CI automation.
+
+Available scopes are `read`, `logs:read`, `deploy`, `sites:control`, and `*`.
+
+Prefer narrow scopes and a dedicated automation identity. The token plaintext is displayed once and only its hash is retained.
+
+See [API and CLI](api-and-cli.md).
 
 ## Docker trust boundary
 
-Access to the Docker daemon is effectively host-administration access. SHAM validates hosted Compose projects to block common escape paths, but you should still:
+Docker daemon access is effectively host-administration access. SHAM validates hosted Compose/runtime configurations to block common escape paths, but that does not turn one Docker daemon into a hostile multi-tenant security boundary.
+
+Recommendations:
 
 - Keep SHAM itself minimally privileged.
-- Protect the Docker socket.
-- Review Dockerfiles/Compose files.
-- Avoid exposing unrelated host paths.
-- Separate hostile tenants at a stronger infrastructure boundary than a single Docker daemon.
+- Mount the Docker socket only when required.
+- Review Dockerfiles, Compose files, and repository manifests.
+- Keep supporting services private.
+- Use named volumes instead of host bind mounts.
+- Use dedicated infrastructure/VM boundaries for mutually untrusted tenants.
 
 ## Plugin trust boundary
 
-JavaScript plugins are trusted server-side code. Worker isolation improves fault containment but is not an operating-system sandbox. Only install reviewed plugins.
+Server-side JavaScript plugins are trusted code. Worker isolation helps contain event-loop failure/blocking but is not an OS sandbox.
 
-The plugin playground does **not** execute server plugin code; its browser preview is a sandboxed development convenience.
+Only install reviewed plugins. Use signatures/trusted signing keys where appropriate.
+
+The Plugin playground validates manifests and previews browser code in a sandboxed iframe; it intentionally never executes server plugin code.
+
+## SHAM update trust boundary
+
+The in-app updater accepts reviewed update archives, supports publisher signature verification, and keeps active application releases beneath persistent data storage.
+
+Updates that change runtime dependency declarations are rejected by the in-app code update path and should be delivered through a reviewed image/manual dependency-aware upgrade.
+
+The managed update paths include application source/assets, `docs/`, and `bin/` so documentation and CLI behavior stay aligned with the active release.
 
 ## Release hygiene
 
-Run:
+Before packaging/publishing source:
 
 ```bash
 npm run release:check
+git status --short
 ```
 
-before packaging. It performs recursive syntax checks, the test suite, and source-tree release checks including generated-secret detection.
+The release check runs syntax/tests and source-tree safety checks including generated-secret detection.
 
-Never ship `.env`, `node_modules`, Git credentials, `data/.jwt-secret`, the live SQLite database, runtime directories, or backup payloads in a source release.
+Never ship:
+
+- `.env` with real credentials.
+- `node_modules`.
+- `data/.jwt-secret`.
+- Master-key files/runtime keyring material.
+- Live SQLite database/WAL files.
+- Backup payloads.
+- Git credentials/deploy keys.
+- Other instance-runtime state.

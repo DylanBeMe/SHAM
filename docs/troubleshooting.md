@@ -1,103 +1,216 @@
 # Troubleshooting
 
+Start with the error message in the dashboard/runtime/deployment log, then use the sections below. Also check **Observability**, **Performance**, and the individual site's Logs/Deployments workspace.
+
 ## Folder upload: `Upload rejected: Too many fields`
 
-Older SHAM builds capped the site multipart form below the number of configuration fields emitted by the expanded runtime wizard. The current build uses a dedicated bounded `SITE_FORM_FIELD_LIMIT` with headroom for the complete site form.
+Older builds capped the site multipart field count below the expanded site's runtime/configuration form.
 
-If the error persists after upgrading, verify that your reverse proxy is not imposing its own multipart/form limits.
+The current build uses a dedicated bounded `SITE_FORM_FIELD_LIMIT` with enough headroom for the full site wizard. Upgrade before changing proxy settings.
 
-## Upload rejected for too many files or size
+If the error persists on the current build, check whether an upstream reverse proxy/WAF imposes its own multipart field/part limit.
 
-SHAM intentionally limits file count, field count, field-name size, individual/aggregate upload size, and disk-backed staging. Split exceptionally large content trees or deploy them through Git/container images instead.
+## Upload rejected for file count or size
+
+SHAM intentionally bounds multipart fields, files, field names, aggregate upload size, archive/file counts, and staging work.
+
+For very large content trees:
+
+- Use a Git deployment.
+- Build/run a container image.
+- Split assets appropriately.
+- Check reverse-proxy request-size and timeout limits.
+
+## Uploaded folder has the wrong root
+
+SHAM removes one common enclosing directory. If the browser sends `project/public/index.html`, the installed path can become `public/index.html` after stripping `project/`.
+
+Set the site entry/build-output path relative to that installed root.
 
 ## Process starts but never becomes ready
 
 Check:
 
-- Application binds the injected `HOST`/`PORT`.
+- Application binds the injected `HOST` and port variable.
 - Readiness path is correct.
-- Expected HTTP status range is correct.
+- Expected HTTP status min/max is correct.
 - Startup timeout is long enough.
-- Database/dependency initialization completes.
-- Runtime logs show a listening message or error.
+- Database/cache dependencies are reachable.
+- Runtime logs show startup failure rather than only a readiness timeout.
 
-Do not bind host-process presets to `0.0.0.0` unless you intentionally want to bypass SHAM's internal-listener boundary.
+For host-process runtimes, avoid `0.0.0.0` unless direct exposure is intentional; normal generated presets should use SHAM's injected loopback `HOST`.
 
-## Docker image fails
+## `EADDRINUSE` during process startup
+
+SHAM retries internal-port allocation for managed process starts, but persistent collisions can indicate another local service is aggressively binding ports or a custom command ignores the injected port.
+
+Confirm the application actually uses `PORT`/configured port variable.
+
+## Docker capability is unavailable
+
+Verify:
+
+```bash
+docker version
+docker info
+```
+
+If SHAM itself runs in Docker, the base Compose file does not mount the Docker socket. Use the optional isolation overlay only when you intend to grant SHAM Docker-daemon control.
+
+## Existing Docker image fails
 
 Check:
 
 ```bash
-docker image inspect IMAGE
 docker pull IMAGE
+docker image inspect IMAGE
 ```
 
-Then verify container port, environment, architecture, and readiness path.
+Then verify:
 
-Existing-image mode does not mount site source over the image.
+- CPU architecture.
+- Application container port.
+- Required environment variables.
+- Entrypoint/CMD.
+- Readiness path.
+- Image registry authentication at the Docker daemon level if required.
+
+Existing-image mode preserves the image filesystem and does not mount empty site source over it.
 
 ## Dockerfile build fails
 
-Check that:
+Check:
 
-- Build context is inside the release.
-- Dockerfile path is inside its build context/release.
-- Docker can reach required package registries.
-- The final image contains the command/application, not only a builder stage.
-- Runtime port matches SHAM configuration.
+- Build context is inside the immutable release.
+- Dockerfile path is inside its context/release.
+- `SHAM_DOCKER_HOST_DATA_PATH` is correct when SHAM is containerized and uses the host daemon.
+- Docker can reach required registries/package mirrors.
+- The final stage actually contains/runs the application.
+- Runtime container port matches SHAM configuration.
+
+## Buildpacks/Nixpacks unavailable
+
+Check the Operations capabilities and:
+
+```bash
+pack --version
+nixpacks --version
+```
+
+Configure `SHAM_PACK_BIN`/`SHAM_NIXPACKS_BIN` when binaries are installed in a nonstandard location.
 
 ## Compose rejected
 
-SHAM rejects unsafe/unmanaged Compose features by design. Remove:
+SHAM rejects unsafe/unmanaged Compose features by design. Remove or redesign:
 
 - Host bind mounts.
 - Privileged mode.
-- Host namespaces/network.
-- Added capabilities/devices.
+- Host network/PID/IPC namespaces.
+- Added capabilities.
+- Devices.
 - Docker socket mounts.
-- External networks/volumes/configs/secrets.
 - Host-gateway mappings.
-- Published ports on auxiliary services.
+- External networks/volumes/configs/secrets.
+- Unsafe security-profile overrides covered by policy validation.
+- Published host ports on support services.
 
-Use named volumes and private project networks.
+Use named volumes and private Compose networks.
 
-## Compose app is reachable on host unexpectedly
+## Compose application is reachable directly on the host
 
-Only the selected app service may expose the configured app port, and only to loopback. Auxiliary services should not have `ports:`. Use `expose:` for documentation/service-to-service intent without host publication.
+Only the selected application service should receive the SHAM-managed publication needed for routing. Support services should not use `ports:`.
+
+Prefer `expose:` for service documentation/internal intent without publishing a host port.
+
+## Compose app works on host SHAM but not containerized SHAM
+
+When SHAM itself is a container, `127.0.0.1` inside SHAM is not the host or sibling application container.
+
+Use the supplied Docker isolation/network configuration and ensure `SHAM_DOCKER_HOST_DATA_PATH`, internal/egress network names, and Docker socket access are correct.
 
 ## Git repository is not discovered
 
-Check the provider connection token and base URL. For Gitea/Forgejo, ensure the configured base URL matches the repository origin/path. SHAM avoids guessing when multiple provider connections would match ambiguously.
+Check:
+
+- Provider token is still valid.
+- Token has repository-list/read permission.
+- Gitea/Forgejo base URL is correct.
+- Repository origin matches the expected provider instance.
+- Multiple self-hosted connections are not ambiguous.
+
+Direct Git URLs remain an alternative when discovery is unnecessary.
+
+## Private Git clone fails
+
+Do not embed credentials in the repository URL. SHAM rejects URLs containing user/password or query-string credentials.
+
+Use a provider connection or dedicated SSH deploy key.
 
 ## Webhook does not deploy
 
-Check webhook base URL, provider permissions, signature secret, branch, and delivery ID. Review deployment/runtime logs. Replayed delivery IDs are ignored for 14 days.
+Check:
+
+1. Public webhook base URL is reachable over HTTPS.
+2. Provider connection can manage/read the repository as required.
+3. Signature/token secret is correct.
+4. Push is for the configured branch.
+5. Delivery/event headers are present.
+6. The delivery has not already been processed/replayed.
+7. Deployment logs do not show a manifest approval/build/readiness failure.
 
 ## Manifest approval required
 
-A changed `sham.yaml`/`sham.yml`/`sham.json` altered execution policy. Review the manifest and deploy with explicit approval only if the change is trusted.
+A changed `sham.yaml`, `sham.yml`, or `sham.json` changed execution policy.
 
-CLI:
+Review the diff, then intentionally approve it only when trusted:
 
 ```bash
-sham deploy SITE_ID --approve-manifest
+sham deploy SITE_ID --branch main --approve-manifest
 ```
 
-## Restore fails before restart
+Never automatically approve manifest changes from untrusted pull requests.
 
-A restore is rejected if archive structure, entry types, path safety, SQLite integrity, or core database tables fail validation. This is intentional; live data remains in place until staging validates.
+## Deployment switched traffic but metadata failed
 
-## License button fails
+Current candidate promotion attempts to restore the previous backend/traffic target if activation bookkeeping fails. Check deployment/runtime logs for a `deployed-with-warning` or promotion error and verify active release state before retrying.
 
-The UI opens `/LICENSE`, which is served directly from the repository's `LICENSE` file. Verify the installed source package includes `LICENSE` and that a reverse proxy is not intercepting that path.
+## Restore is rejected before restart
 
-## UI popup appears behind a modal
+A backup restore fails closed when archive paths/types/counts, staged tree shape, SQLite integrity, or core database tables fail validation.
 
-Current SHAM attaches tooltips/toast regions to the active top-layer dialog/popover when necessary and uses a dedicated high stacking layer. Clear stale browser assets/cache after upgrading if old CSS/JS remains loaded.
+The live data directory should remain in place until the staged backup validates.
+
+## Restore succeeded but old backup files are missing
+
+The restore workflow preserves the backup/update stores required by SHAM's recovery/update design. If files are unexpectedly absent, check the selected provider/path and restore/audit logs before running another restore.
+
+## License/info button fails
+
+The information button opens `/LICENSE`. Verify the deployed application package contains the repository `LICENSE` file and that a reverse proxy is not intercepting that path.
+
+## Tooltip or notification appears behind a modal
+
+Current SHAM mounts top-layer tooltips/toast regions into the active dialog/popover context when required.
+
+After upgrading:
+
+- Hard-refresh the dashboard.
+- Clear a stale service-worker/proxy cache if present externally.
+- Confirm custom/plugin CSS is not forcing a lower z-index/stacking context.
+
+## Environment-variable controls overlap
+
+Current layouts use responsive grid/wrapping rules. Clear cached `styles.css`/browser assets after upgrading. If the issue exists only with a plugin/theme override, disable that override to isolate it.
+
+## Git-provider controls overlap
+
+Provider token/base-URL/action rows are responsive in the current dashboard. The same stale-asset/plugin-CSS checks apply.
 
 ## CI fails: generated JWT secret
 
-Do not commit or package `data/.jwt-secret`. Tests that import configuration must provide a test JWT secret so they do not mutate the source tree.
+A generated `data/.jwt-secret` must not appear in source/release archives.
+
+Tests that load configuration should supply a test secret instead of causing config initialization to generate one in the repository.
 
 Run:
 
@@ -106,15 +219,56 @@ npm run release:check
 git status --short
 ```
 
-The release check must complete without generating credentials.
+The release check must leave the source tree free of generated credentials.
 
-## CLI hangs on unreachable dashboard
+## CLI hangs or times out
 
-The bundled CLI applies a 30-second timeout to ordinary/control calls, with longer bounded timeouts for deploy and rollback. Verify `SHAM_URL`, DNS/TLS, and reverse-proxy connectivity if a request times out.
+Verify `SHAM_URL`, DNS, TLS, authentication, and reverse-proxy connectivity.
+
+Current CLI bounds:
+
+- Ordinary/control requests: 30 seconds.
+- Deploy: up to 30 minutes.
+- Rollback: up to 10 minutes.
+
+A reverse proxy with a shorter timeout can still terminate a long deployment request.
+
+## API returns `401`/`403`
+
+Confirm:
+
+- `Authorization: Bearer ...` is present.
+- Token has not been revoked/expired.
+- Token scope includes the action.
+- The owning user still has the required role.
+- Administrator endpoints are not being called with an ordinary user token.
+
+## OIDC login fails
+
+Check:
+
+- OIDC is enabled.
+- Issuer/client ID/client secret (if required) are correct.
+- Redirect URI exactly matches the SHAM callback configured at the identity provider.
+- Issuer/JWKS endpoints are reachable from SHAM.
+- User auto-provisioning policy permits the identity when the user does not already exist.
+- Server clock is accurate enough for token time validation.
+
+## Plugin playground preview cannot call an API
+
+Expected behavior. The playground preview is sandboxed and network-blocked. It validates manifests and previews browser UI without granting real server/network authority.
+
+Install/test the plugin on a development SHAM instance for real server actions.
+
+## In-app update changed code but docs/CLI look old
+
+Current update releases manage `docs/` and `bin/` alongside application source/assets. If an older active update predates this behavior, perform one normal reviewed upgrade to the current release so later in-app updates keep docs and CLI aligned.
 
 ## More diagnostics
 
-- **Observability**: audit/runtime events and logs.
-- **Performance**: CPU/memory/latency/queue/connection data.
-- **Dashboard quick views**: unhealthy sites, recent failed deployments, active alerts, automated traffic.
-- **Site workspace**: release history, runtime logs, files, networking, security, and settings.
+- **Dashboard quick views** — unhealthy sites, failed deployments, active alerts, automated traffic.
+- **Sites → workspace** — runtime, files, logs, releases/deployments, networking/security/settings.
+- **Observability** — runtime/audit events and logs.
+- **Performance** — CPU/memory/request/error/latency/connection/restart data.
+- **Settings → Instance** — runtime capabilities, Git providers, backups/observability.
+- **Settings → Administration** — users/OIDC/Cloudflare/Certbot/persistent policy.

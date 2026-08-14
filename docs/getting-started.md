@@ -1,15 +1,25 @@
 # Getting started
 
-## Requirements
+This guide gets a new SHAM instance from source to its first deployed site. For production hardening, continue with [Operations and security](operations-and-security.md) and [Configuration reference](configuration-reference.md).
+
+## 1. Requirements
+
+Base dashboard:
 
 - Node.js 22 or newer.
 - npm.
 - SQLite support through `better-sqlite3`.
-- Docker only when you use OCI images, Dockerfile builds, Buildpacks/Nixpacks container output, Docker Compose, or Docker-isolated legacy Node.
-- Certbot only when SHAM is responsible for certificate issuance.
-- `git` for Git-backed deployments.
 
-## Install
+Install optional tools only for features you plan to use:
+
+- `git` — Git deployments.
+- Docker — existing OCI images, Dockerfile builds, Docker Compose, Docker-isolated Node/runtime execution, and Anubis.
+- Certbot — certificate issuance/renewal.
+- `pack` — Cloud Native Buildpacks.
+- `nixpacks` — Nixpacks builds.
+- Restic/AWS CLI/SFTP — corresponding backup destinations.
+
+## 2. Install
 
 ```bash
 cp .env.example .env
@@ -17,61 +27,153 @@ npm ci
 npm start
 ```
 
-The default dashboard listens on `127.0.0.1:8080`. Complete the first-user flow to create the initial administrator.
+The dashboard listens on `127.0.0.1:8080` by default.
 
-For production, put the dashboard behind HTTPS, run SHAM as an unprivileged operating-system account, persist `SHAM_DATA_PATH`, and keep the data directory out of the source tree.
+The first successfully created account becomes the administrator. SHAM then locks ordinary public registration unless the administrator explicitly changes the registration policy.
 
-## Persistent data
+## 3. Production basics before exposing the dashboard
 
-`SHAM_DATA_PATH` contains the database, site data, releases, backups, encrypted settings, generated key material, and runtime metadata. Treat it as private state.
+At minimum:
 
-Do not commit the runtime data directory. In particular, a generated `data/.jwt-secret` is instance state, not source code. CI should run:
+1. Put the dashboard behind HTTPS.
+2. Persist `SHAM_DATA_PATH` outside the source tree.
+3. Supply a strong `SHAM_JWT_SECRET` through a secret store/environment.
+4. Run SHAM as an unprivileged OS user.
+5. Configure proxy trust narrowly.
+6. Mount the Docker socket only if Docker-managed application features are required.
+7. Keep independent backups of the complete SHAM data path.
+
+See [Configuration reference](configuration-reference.md) for environment settings.
+
+## 4. Understand persistent data
+
+`SHAM_DATA_PATH` contains private mutable instance state, including:
+
+- SQLite state.
+- Site content.
+- Immutable releases/previews.
+- Generated JWT/master-key material when not supplied externally.
+- Plugin packages/settings.
+- Certificates.
+- Backups and update state.
+- Runtime metadata.
+
+Do not commit this directory. A generated `data/.jwt-secret` is instance state, not source code.
+
+Before distributing source, run:
 
 ```bash
 npm run release:check
 ```
 
-before packaging or publishing.
+## 5. Create a site
 
-## Create a site
+The wizard offers four primary source choices.
 
-The site wizard supports four source paths:
+### Upload
 
-1. **Upload** — upload files or an entire folder.
-2. **Git repository** — clone and deploy from a supported Git provider or a repository URL.
-3. **Docker image** — run an existing OCI image without overlaying uploaded source onto the image.
-4. **Reverse proxy** — route SHAM traffic to an existing upstream service.
+Upload a normal ZIP or select a folder from the browser. Use this for static sites or source trees you want SHAM to run directly.
 
-The selected runtime determines how the source is executed. See [Runtimes and Docker](runtimes-and-docker.md).
+SHAM strips one common enclosing directory. For example, a selected folder containing `my-site/index.html` is installed with `index.html` at the site root.
 
-### Folder uploads
+The multipart form is bounded, but the current field-count allowance includes the expanded runtime/site configuration. Older builds could report `Upload rejected: Too many fields`; see [Troubleshooting](troubleshooting.md) if you encounter that message.
 
-SHAM accepts large folder trees using disk-backed multipart storage and a bounded field/file count. The site form deliberately allows enough non-file fields for the complete runtime configuration while keeping an upper bound on multipart parsing.
+### Git repository
 
-If a folder has a single enclosing directory, SHAM strips that common directory before installation.
+Choose a connected Git provider or paste a direct HTTPS/SSH Git URL. Supported connected providers are GitHub, GitLab, Bitbucket Cloud, Gitea, and Forgejo.
 
-## Deployment flow
+Git sites support install/build commands, immutable releases, previews, webhooks, and repository manifests. See [Git and CI/CD](git-and-cicd.md).
 
-Git deployments use immutable release directories:
+### Docker image
 
-1. Clone into a staging area.
-2. Read and validate any `sham.yaml`, `sham.yml`, or `sham.json`.
-3. Run configured install/build steps.
-4. Move the candidate to its final immutable release path.
-5. Start the candidate.
-6. Wait for readiness.
-7. Switch SHAM traffic to the candidate.
-8. Drain and stop the old backend.
-9. Persist the active release.
+Supply an existing OCI image and the container port the application listens on. SHAM preserves the image filesystem; it does not mount an empty uploaded project over the application image.
 
-If candidate startup or readiness fails, the existing release remains active.
+See [Runtimes and Docker](runtimes-and-docker.md).
 
-## Navigation
+### Reverse proxy
 
-The left navigation includes Dashboard, Sites, Observability, Performance, Security, Extensions, and administrator Settings. The four attention cards at the top of Dashboard are interactive drilldowns.
+Use this when the application lifecycle is managed outside SHAM. Configure the upstream host/port and let SHAM provide the public listener/domain/policy layer.
 
-Use `Ctrl/Cmd+K` for the command palette. It searches settings categories, sites, site files/logs/settings, performance, documentation, and common deployment/runtime actions.
+## 6. Choose a runtime
 
-## Updates
+SHAM has five runtime drivers:
 
-Use the built-in update workflow only with trusted signed update artifacts. Back up the instance first. SHAM stores application-update runtime state beneath the configured data path so a container recreation does not discard the active update metadata.
+- **Static** — serve files directly.
+- **Process** — execute a managed host process.
+- **Container** — run an OCI container from an image or source-to-image build.
+- **Compose** — run a constrained Docker Compose application.
+- **Proxy** — route to an external upstream.
+
+Process presets currently include Node, npm, Bun, Deno, FastAPI, Django, Go, Java, and Custom.
+
+Container presets include Existing image, Dockerfile, Buildpacks, and Nixpacks.
+
+## 7. Make server applications listen correctly
+
+Managed application servers should bind the `HOST`/port value SHAM injects.
+
+Example Node/Express:
+
+```js
+const express = require('express');
+const app = express();
+
+app.get('/health', (_req, res) => res.sendStatus(204));
+app.get('/', (_req, res) => res.send('Hello'));
+
+app.listen(Number(process.env.PORT), process.env.HOST || '127.0.0.1');
+```
+
+For framework-specific presets, use the generated/default command as a starting point and adjust module names/paths for your application.
+
+## 8. Configure readiness
+
+A process opening a socket does not always mean the application is ready to serve production traffic.
+
+Prefer an HTTP readiness endpoint that confirms the application has completed critical initialization. SHAM supports TCP, HTTP, command, and disabled readiness types where appropriate.
+
+Git/release activation follows this general flow:
+
+1. Clone/build into staging.
+2. Read/validate repository manifest.
+3. Move candidate to its final immutable release path.
+4. Start candidate runtime.
+5. Wait for readiness.
+6. Switch traffic to the candidate.
+7. Drain the previous backend.
+8. Stop previous backend.
+9. Persist active release metadata.
+
+A candidate that fails before traffic switching does not replace the existing backend.
+
+## 9. Learn the dashboard
+
+The left navigation includes Dashboard, Sites, Observability, Performance, Security, Extensions, and Settings.
+
+The four Dashboard attention cards are interactive drilldowns for:
+
+- Unhealthy sites.
+- Recent failed deployments.
+- Active alerts.
+- Automated traffic.
+
+Press **Ctrl/Cmd+K** to search settings, websites, site files/logs/settings, performance, documentation, and common runtime/deployment actions.
+
+See [Dashboard and UI](dashboard-and-ui.md).
+
+## 10. Optional next steps
+
+- Connect a Git provider and enable signed/provider webhooks.
+- Add HTTP readiness/liveness probes.
+- Configure environment variables and secrets.
+- Configure backups and test a restore.
+- Enable OIDC/passkeys/TOTP according to your identity model.
+- Configure Cloudflare/Certbot/Tunnels if needed.
+- Create a scoped API token for CI/CD.
+- Try the administrator Plugin playground before packaging a plugin.
+
+## Updating SHAM
+
+The in-app update workflow is for reviewed SHAM update archives and persists application releases beneath `SHAM_DATA_PATH`. Updates that change runtime dependencies require a reviewed image/manual upgrade rather than silently installing new server dependencies.
+
+The managed update payload includes the application source, dashboard assets, `docs/`, and the bundled CLI so documentation and automation tooling stay aligned with the active release.

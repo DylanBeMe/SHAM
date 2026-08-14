@@ -1,73 +1,77 @@
 # Runtimes and Docker
 
-SHAM models execution with reusable runtime drivers instead of adding a new orchestration branch for every language.
+SHAM deliberately separates **runtime drivers** from **framework presets**. Adding support for another language usually means supplying a process/container preset rather than adding another orchestration implementation.
 
-## Runtime drivers
+## Runtime driver matrix
 
-### Static
+| Driver | SHAM manages | Typical use |
+|---|---|---|
+| `static` | HTTP file serving | HTML/CSS/JS, Vite/Astro/Hugo build output |
+| `process` | Local child process + internal port | Node/npm, Bun, Deno, Python, Go, Java, custom server |
+| `container` | Docker container + internal/published routing | Existing images, Dockerfile, Buildpacks, Nixpacks |
+| `compose` | Constrained Docker Compose project | App + private supporting services |
+| `proxy` | Public listener only | Existing upstream app managed outside SHAM |
 
-Serves a directory and entry document directly through SHAM. Useful for HTML/CSS/JS, Vite/Astro/Hugo output, and other generated static sites.
+Legacy `node` records remain compatible and resolve through the generalized process/container runtime implementation.
 
-### Process
+## Process runtimes
 
-Runs a managed host process with a command/argument vector, working directory, injected host/port values, restart policy, health checks, limits, and graceful shutdown.
+Current presets:
 
-Built-in presets include:
+| Preset | Default command |
+|---|---|
+| Node | `node server.js` |
+| npm | `npm run start` |
+| Bun | `bun run start` |
+| Deno | `deno run --allow-net --allow-env --allow-read server.ts` |
+| FastAPI | `uvicorn app:app --host "$HOST" --port "$PORT"` |
+| Django | `gunicorn app.wsgi:application --bind "$HOST:$PORT"` |
+| Go | `./app` |
+| Java | `java -jar app.jar` |
+| Custom | operator-supplied command/argv |
 
-- Node
-- npm start
-- Bun
-- Deno
-- FastAPI/Uvicorn
-- Django/Gunicorn
-- Go binary
-- Java JAR
-- Custom process
+These are starting presets, not framework installers. Your release/build stage must provide the executable/dependencies the command needs.
 
-Process applications should bind to the injected `HOST` and `PORT`. Presets use SHAM's loopback host so an internal application port is not accidentally exposed around SHAM's managed listener.
+### Environment and internal binding
 
-### Container
+SHAM allocates an internal application port and supplies:
 
-Runs an OCI container. Container modes include:
+- `HOST`.
+- `PORT`.
+- The configured custom port-variable name when one is used.
+- Site environment values allowed for the runtime scope.
 
-- **Existing image** — pull/use an image such as `ghcr.io/example/app:1.4.0`.
-- **Dockerfile** — build an image from the release source.
-- **Buildpacks** — use Cloud Native Buildpacks when `pack` is installed.
-- **Nixpacks** — build through Nixpacks when the executable is installed.
+Server applications should bind the injected host/port. Do not casually bind generated host-process applications to `0.0.0.0`, because that can make the internal backend directly reachable outside SHAM's public listener boundary.
 
-SHAM assigns and discovers internal ports, applies runtime limits, injects environment safely, waits for readiness, and removes SHAM-built transient images when they are no longer needed.
+### Custom process commands
 
-### Docker Compose
+Use Custom when a server can run as a normal foreground process. Repository manifests can provide either a command string or a structured argv array. Structured arrays are safer for arguments containing whitespace because SHAM does not need to reconstruct shell quoting.
 
-Runs a selected application service from a Compose project. Auxiliary services remain on the project network.
+## Container runtimes
 
-SHAM intentionally rejects Compose features that escape the managed project boundary, including privileged containers, host networking/PID/IPC, added capabilities, devices, Docker-socket mounts, host bind mounts, host-gateway mappings, disabled security profiles, privileged build entitlements, externally managed networks/volumes/configs/secrets, and unmanaged host-port publication.
+Container mode supports four sources.
 
-The selected application service may publish its configured container port only to loopback. If it does not publish a port and SHAM runs on the host, SHAM adds a loopback-only ephemeral publication. If SHAM itself runs in Docker, it connects the selected service to the configured SHAM Docker network and addresses it through a managed alias.
+### Existing Docker/OCI image
 
-When **outbound networking is disabled**, SHAM adds internal Compose network overrides.
+Choose **Docker image**, provide an image reference and the application container port.
 
-### Proxy
+SHAM lets Docker pull the image if it is not already present. Existing-image mode preserves the image filesystem and does not overlay uploaded source over the application by default.
 
-Routes a SHAM-managed listener/domain to an already-running HTTP/S upstream. Use this when another supervisor owns the application lifecycle.
+Prefer immutable version tags or image digests for reproducible deployment.
 
-## Existing Docker images
+### Dockerfile
 
-Choose **Docker image** as the site source, then provide a valid OCI image reference and container port. SHAM does not mount an empty site directory over the application image.
+Choose **Dockerfile** for source that contains its own image definition.
 
-Docker's normal pull-if-missing behavior applies. Pin production images to immutable tags or digests where possible.
+Important rules:
 
-## Dockerfiles
+- Dockerfile/build context must remain inside the immutable release.
+- Dockerfile paths are validated as safe relative paths.
+- The image is built before candidate activation.
+- Startup/readiness failure cleans up the candidate container/image resources managed for that attempt.
+- If SHAM itself runs in Docker, `SHAM_DOCKER_HOST_DATA_PATH` must map SHAM's internal data path to the corresponding host path so the host daemon can see build context/release files.
 
-For Dockerfile mode:
-
-- Build context must stay inside the deployed release.
-- A relative Dockerfile path is resolved against that build context and must also stay inside the release.
-- Avoid baking secrets into image layers.
-- Expose/listen on the configured application port.
-- Add an application health endpoint and configure HTTP readiness when possible.
-
-Example:
+A minimal example:
 
 ```dockerfile
 FROM node:22-alpine
@@ -76,78 +80,179 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
 ENV HOST=0.0.0.0
+EXPOSE 3000
 CMD ["node", "server.js"]
 ```
 
-The container itself can listen on all container interfaces; SHAM controls host publication/routing.
+The container can listen on `0.0.0.0` **inside the container**; SHAM controls how that port is exposed/routed.
 
-## Docker Compose example
+### Cloud Native Buildpacks
+
+Buildpack mode uses the configured `SHAM_PACK_BIN` executable. The default builder can be configured per runtime/spec.
+
+If `pack` is unavailable, SHAM reports the capability as missing; other container modes continue to work.
+
+### Nixpacks
+
+Nixpacks mode uses `SHAM_NIXPACKS_BIN`. It similarly requires the Nixpacks executable on the SHAM host/control-plane image.
+
+## Docker Compose
+
+Compose mode is intended for an application service plus private supporting services. SHAM does **not** treat arbitrary Compose files as unrestricted host administration.
+
+The selected application service is routed through SHAM. Supporting services should stay private on the Compose network.
+
+Example:
 
 ```yaml
 services:
   app:
     build: .
     environment:
-      PORT: "3000"
+      PORT: 3000
     expose:
       - "3000"
     depends_on:
-      - db
+      - redis
 
-  db:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: app
+  redis:
+    image: redis:7-alpine
     volumes:
-      - db-data:/var/lib/postgresql/data
+      - cache-data:/data
 
 volumes:
-  db-data:
+  cache-data: {}
 ```
 
-Select service `app` and container port `3000` in SHAM. Do not publish the database to the host.
+Configure the SHAM Compose service as `app` and container port `3000`.
+
+### Compose restrictions
+
+SHAM rejects common host/container escape or unmanaged-publication features, including:
+
+- Privileged containers.
+- Host networking/PID/IPC namespaces.
+- Added Linux capabilities.
+- Devices.
+- Docker socket mounts.
+- Host bind mounts; use named volumes instead.
+- Host-gateway mappings.
+- Disabled/unsafe security-profile settings covered by policy validation.
+- External/unmanaged networks, volumes, configs, or secrets.
+- Published host ports on supporting services.
+
+The selected application service may receive the SHAM-managed loopback publication needed for routing when SHAM runs directly on the host. When SHAM itself is containerized, runtime networking uses the configured shared Docker network so the control plane does not incorrectly route to its own container-local `127.0.0.1`.
+
+### No-egress Compose/runtime networks
+
+When a site's outbound-network setting disallows internet access, SHAM can place managed Docker workloads on an internal Docker network. Configure `SHAM_DOCKER_INTERNAL_NETWORK` and the container isolation overlay appropriately.
+
+## Docker-isolated legacy Node
+
+Legacy Node sites can still select Docker isolation. Dependencies are installed inside a runtime-compatible image rather than on the SHAM host and then executed under a different libc/base image. This avoids host-built native addons being reused in an incompatible container environment.
 
 ## Readiness, liveness, and shutdown
 
-Readiness controls whether a candidate may receive production traffic. Supported probe styles include HTTP, TCP, command, and disabled/none where appropriate.
+### Readiness
 
-Prefer an HTTP readiness endpoint that confirms dependencies needed to serve traffic are usable.
+Readiness determines when a candidate is safe to receive traffic.
 
-Liveness runs after activation and can trigger the configured restart policy. Startup timeout, probe path/status range, interval, shutdown grace, and blue/green drain are configurable.
+Supported types include:
 
-## `sham.yaml`
+- TCP.
+- HTTP.
+- Command.
+- Disabled/none where allowed.
 
-A repository can describe its build/runtime policy:
+HTTP readiness supports a path and expected status range. Prefer an endpoint that represents application readiness rather than only process existence.
+
+### Liveness
+
+Liveness supervises an active runtime and can trigger restart policy behavior.
+
+### Startup timeout
+
+A candidate must become ready within the configured startup timeout. Failure leaves/removes the candidate rather than promoting it.
+
+### Graceful shutdown and blue/green drain
+
+On replacement/stop, SHAM gives the backend a configurable shutdown grace period before force termination. During successful release replacement, the old backend can remain alive for a configurable drain period after the traffic switch.
+
+## Candidate-first immutable releases
+
+Git deployments keep release paths immutable. A running application is not started from a directory that will later be renamed underneath it.
+
+Candidate promotion is designed so persistence/protection failure restores the previous runtime target where possible. First-start failure tears down the candidate instead of leaving an untracked backend running.
+
+## Runtime reconciliation
+
+Managed runtime identity is persisted/labelled sufficiently for SHAM to reconcile stale managed processes/containers after control-plane restart. The desired site state and observed backend state are treated separately.
+
+## `sham.yaml`, `sham.yml`, and `sham.json`
+
+Repository manifests can override build/runtime execution policy.
+
+Example:
 
 ```yaml
 build:
-  command: npm ci && npm run build
+  install: npm ci
+  command: npm run build
 
 runtime:
   driver: process
   command: ["npm", "run", "start"]
+  workingDirectory: .
   portEnv: PORT
 
-health:
+readiness:
   type: http
   path: /health
-  startupTimeout: 45
+  statusMin: 200
+  statusMax: 399
+  timeoutSeconds: 45
+
+shutdown:
+  graceSeconds: 10
+  drainSeconds: 5
 ```
 
-SHAM hashes execution-relevant policy. A Git commit that changes repository-controlled execution policy requires explicit approval before deployment. Review manifest diffs as code execution changes, not ordinary metadata changes.
+The YAML parser intentionally supports a small mapping/scalar subset. Unsupported YAML constructs fail closed. JSON manifests can be used when you need unambiguous structured arrays/objects.
 
-## Docker-host mapping when SHAM is containerized
+Execution-relevant policy is hashed. A changed/removed manifest policy requires explicit approval before a Git deployment may activate it.
 
-When SHAM itself runs in Docker and asks the host Docker daemon to mount staged paths, configure `SHAM_DOCKER_HOST_DATA_PATH` to the host-side path corresponding to SHAM's data volume.
+## Docker-host path mapping
 
-Configure the managed Docker network settings described in `.env.example` for container/Compose communication.
+When SHAM itself runs in Docker but controls the host Docker daemon, the host daemon cannot see container-internal `/data/...` paths automatically.
 
-## Reliability guidance
+Set:
 
+```bash
+SHAM_DOCKER_HOST_DATA_PATH=/absolute/host/path/to/sham-data
+```
+
+so SHAM can translate release/build paths into host-visible paths for Docker mounts/build contexts.
+
+## Docker isolation overlay
+
+The base `docker-compose.yml` intentionally avoids the Docker socket. Use the isolation overlay only when you need daemon-managed application features:
+
+```bash
+export SHAM_DOCKER_HOST_DATA_PATH="$(pwd)/sham-data"
+export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+
+docker compose -f docker-compose.yml -f docker-compose.isolation.yml up -d --build
+```
+
+Docker daemon access is effectively host-administration access. Do not treat a single Docker daemon as a hostile multi-tenant sandbox.
+
+## Reliability checklist
+
+- Use HTTP readiness for applications with initialization dependencies.
 - Prefer immutable image tags/digests.
-- Use readiness probes.
-- Keep application state outside ephemeral runtime containers.
-- Use named Compose volumes rather than host bind mounts.
-- Keep databases/private services un-published.
-- Set CPU, memory, PID, and connection limits appropriate to the application.
-- Review Dockerfile/Compose changes like infrastructure code.
+- Keep state in managed volumes/external services rather than ephemeral container layers.
+- Keep supporting Compose services private.
+- Set CPU, memory, PID, connection, startup, and shutdown bounds appropriate to the application.
+- Keep Dockerfile/Compose/repository-manifest changes in code review.
+- Test rollback before relying on it during an incident.
+- Monitor disk usage for images/releases/backups even though SHAM cleans up candidate resources it creates for failed attempts.
