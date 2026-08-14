@@ -6,7 +6,7 @@ This manual documents the current SHAM 1.0.0 feature set. The root [README](../R
 
 ### Install or deploy something
 
-- [Getting started](getting-started.md) — installation, first administrator, persistent data, and the first deployment.
+- [Getting started](getting-started.md) — recommended Docker Compose install, optional Docker-daemon access, first administrator, persistent data, and the first deployment.
 - [Runtimes and Docker](runtimes-and-docker.md) — static/process/container/Compose/proxy runtimes, Docker images, Dockerfiles, Buildpacks, Nixpacks, ports, probes, and runtime security.
 - [Git and CI/CD](git-and-cicd.md) — GitHub, GitLab, Bitbucket Cloud, Gitea, Forgejo, direct Git URLs, webhooks, releases, previews, and `sham.yaml` approval.
 

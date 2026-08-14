@@ -52,24 +52,51 @@ The dashboard includes a shorter categorized copy of the most common documentati
 
 ## Quick start
 
-### Requirements
+> [!TIP]
+> **Docker Compose is the recommended way to run SHAM.** SHAM itself runs in a container; an optional Compose overlay lets that container manage Docker workloads on the host when you need container/Compose features.
 
-For the base dashboard:
+### 1. Start the base control plane
 
-- Node.js 22 or newer.
-- npm.
-- A platform supported by `better-sqlite3` (or a local compiler toolchain when no prebuilt binary is available).
+Requirements: Docker Engine and Docker Compose v2.
 
-Optional capabilities require their corresponding tools:
+```bash
+mkdir -p sham-data
+docker compose up -d --build
+```
 
-- Docker: OCI images, Dockerfile builds, Compose, Docker-isolated runtimes, Anubis.
-- Git: Git-backed deployments.
-- Certbot: certificate issuance/renewal.
-- `pack`: Cloud Native Buildpacks.
-- `nixpacks`: Nixpacks builds.
-- Restic/AWS CLI/SFTP: corresponding backup destinations.
+Open `http://127.0.0.1:8080` (or port `8080` on the server running SHAM). The first account becomes the administrator.
 
-### Install
+The default stack persists `/data` to `./sham-data` and publishes the dashboard/API on `8080`, shared HTTP/HTTPS edge listeners on `80`/`443`, and host mappings for the per-site listener range `4100-4199`.
+
+The base Compose file intentionally **does not mount the Docker socket**.
+
+### 2. Enable Docker-managed workloads only when needed
+
+Existing OCI images, Dockerfile builds, Docker Compose projects, Docker-isolated runtimes, and Anubis require access to the host Docker daemon when SHAM itself is containerized:
+
+```bash
+export SHAM_DOCKER_HOST_DATA_PATH="$(pwd)/sham-data"
+export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.isolation.yml \
+  up -d --build
+```
+
+This is **not Docker-in-Docker**: the Docker CLI inside SHAM talks to the host daemon through `/var/run/docker.sock`. That socket grants substantial authority over the host, so enable the overlay only where that trust boundary is acceptable.
+
+`SHAM_DOCKER_HOST_DATA_PATH` is required because the host daemon must receive host-visible paths for build contexts and mounts; it cannot directly see SHAM's container-internal `/data/...` paths.
+
+### 3. Harden before public exposure
+
+Persist and back up `./sham-data`, put the administrative dashboard behind HTTPS/restricted ingress, configure proxy trust narrowly, publish only needed ports, and use externally managed secrets where appropriate.
+
+For the complete walkthrough—including Docker architecture, first deployment, readiness, and the direct-Node alternative—read **[Getting started](docs/getting-started.md)**.
+
+### Direct Node installation
+
+Running directly from source is supported for development/manual installations:
 
 ```bash
 cp .env.example .env
@@ -77,9 +104,7 @@ npm ci
 npm start
 ```
 
-Open `http://127.0.0.1:8080` by default. The first account becomes the administrator; public registration is locked after bootstrap unless an administrator changes the registration policy.
-
-For production, terminate the dashboard behind HTTPS, persist `SHAM_DATA_PATH`, keep runtime data outside the repository, and use a long random `SHAM_JWT_SECRET` supplied by your secret-management system.
+This is no longer the recommended first-run path. Host installations must provide any optional executables used by enabled features, such as Docker, Git, Certbot, `pack`, `nixpacks`, Restic, AWS CLI, or SFTP.
 
 ## Create a site
 
@@ -129,11 +154,12 @@ health:
 
 Execution-relevant manifest changes are hashed. Git deployments require explicit approval when that policy changes.
 
-## Docker deployment
+## Docker deployment details
 
-### Run SHAM itself in Docker
+Docker Compose is the recommended deployment path shown above and in [Getting started](docs/getting-started.md). If you need to run the same image without Compose, the equivalent base setup is:
 
 ```bash
+mkdir -p sham-data
 docker build -t sham .
 
 docker run -d \
@@ -146,35 +172,17 @@ docker run -d \
   -v "$PWD/sham-data:/data" \
   -e SHAM_HOST=0.0.0.0 \
   -e SHAM_DATA_PATH=/data \
-  -e SHAM_JWT_SECRET="$(openssl rand -hex 32)" \
+  -e SHAM_EDGE_HOST=0.0.0.0 \
+  -e SHAM_EDGE_HTTP_PORT=80 \
+  -e SHAM_EDGE_HTTPS_PORT=443 \
   sham
 ```
 
-Or:
+If `SHAM_JWT_SECRET` is not supplied, SHAM generates signing material beneath the persistent data path. Production operators may instead inject their own long random secret through their deployment/secret-management system.
 
-```bash
-docker compose up -d --build
-```
+The manual command above does **not** mount the Docker socket. For Docker image, Dockerfile, Compose, Docker-isolated runtime, or Anubis features, use the documented `docker-compose.isolation.yml` flow rather than casually adding the socket to an ad-hoc command.
 
-The default Compose file does **not** mount the Docker socket. That is intentional.
-
-### Enable managed Docker workloads
-
-Docker image, Dockerfile, Compose, and other daemon-managed runtime features require the optional isolation overlay when SHAM itself is containerized:
-
-```bash
-export SHAM_DOCKER_HOST_DATA_PATH="$(pwd)/sham-data"
-export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
-
-docker compose \
-  -f docker-compose.yml \
-  -f docker-compose.isolation.yml \
-  up -d --build
-```
-
-Mounting the Docker socket gives SHAM substantial control over the host. Use this only on infrastructure where that trust boundary is acceptable.
-
-See **[Runtimes and Docker](docs/runtimes-and-docker.md)** for existing-image mode, Dockerfile contexts, Buildpacks/Nixpacks, Compose restrictions, internal networks, and containerized-control-plane path mapping.
+See **[Getting started](docs/getting-started.md)** for the two Docker modes and **[Runtimes and Docker](docs/runtimes-and-docker.md)** for runtime details and restrictions.
 
 ## Git and CI/CD
 

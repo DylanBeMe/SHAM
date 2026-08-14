@@ -1,51 +1,171 @@
 # Getting started
 
-This guide gets a new SHAM instance from source to its first deployed site. For production hardening, continue with [Operations and security](operations-and-security.md) and [Configuration reference](configuration-reference.md).
+This guide gets a new SHAM instance running and deploys a first site.
+
+> [!TIP]
+> **Use Docker Compose unless you specifically want to run SHAM directly from source.**
+> The repository ships a production Dockerfile and Compose configuration, and the stock SHAM image already includes several common infrastructure tools used by the control plane.
+
+## What is running where?
+
+SHAM is a control plane. The recommended setup runs **SHAM itself inside a Docker container**:
+
+```text
+Docker host
+└── SHAM container
+    ├── dashboard/API        :8080
+    ├── shared HTTP edge     :80
+    ├── shared HTTPS edge    :443
+    └── persistent state     /data
+         ↕
+       ./sham-data on the host
+```
+
+There are two Docker modes:
+
+| Mode | Use it when | Docker socket? |
+|---|---|---|
+| **Base Compose** | You want to run SHAM and use features that do not require SHAM to control the Docker daemon. | No |
+| **Compose + isolation overlay** | SHAM needs to launch/manage Docker images, Dockerfile builds, Compose apps, Docker-isolated runtimes, or Anubis. | Yes |
+
+The second mode is **not Docker-in-Docker**. SHAM still runs in its own container, but its Docker CLI talks to the **host Docker daemon** through `/var/run/docker.sock`.
+
+> [!IMPORTANT]
+> Mounting the Docker socket gives SHAM substantial control over the Docker host. Enable it only when you need Docker-managed workloads and only on infrastructure where that trust boundary is acceptable.
 
 ## 1. Requirements
 
-Base dashboard:
+For the recommended installation:
 
-- Node.js 22 or newer.
-- npm.
-- SQLite support through `better-sqlite3`.
+- Docker Engine.
+- Docker Compose v2 (`docker compose`).
+- Git, if you are cloning the SHAM repository instead of using an already-downloaded source tree.
 
-Install optional tools only for features you plan to use:
+For the optional Docker-management mode, the host must also expose a usable Docker socket at `/var/run/docker.sock`.
 
-- `git` — Git deployments.
-- Docker — existing OCI images, Dockerfile builds, Docker Compose, Docker-isolated Node/runtime execution, and Anubis.
-- Certbot — certificate issuance/renewal.
-- `pack` — Cloud Native Buildpacks.
-- `nixpacks` — Nixpacks builds.
-- Restic/AWS CLI/SFTP — corresponding backup destinations.
+The stock image includes Node.js, Git, the Docker CLI, Certbot, Cloudflared, Restic, AWS CLI, and OpenSSH tooling. **Cloud Native Buildpacks (`pack`) and Nixpacks are not bundled**; if you want those build modes, extend the image or otherwise make the configured executable available inside the SHAM container.
 
-## 2. Install
+If you run SHAM directly from source instead, you need Node.js 22 or newer, npm, and a platform supported by `better-sqlite3`.
+
+## 2. Start SHAM with Docker Compose
+
+From the repository root:
 
 ```bash
-cp .env.example .env
-npm ci
-npm start
+mkdir -p sham-data
+docker compose up -d --build
 ```
 
-The dashboard listens on `127.0.0.1:8080` by default.
+This uses `docker-compose.yml`, builds the SHAM image, starts the control plane, and persists mutable instance state in `./sham-data`.
 
-The first successfully created account becomes the administrator. SHAM then locks ordinary public registration unless the administrator explicitly changes the registration policy.
+Check that it started:
 
-## 3. Production basics before exposing the dashboard
+```bash
+docker compose ps
+docker compose logs -f sham
+```
 
-At minimum:
+Then open:
 
-1. Put the dashboard behind HTTPS.
-2. Persist `SHAM_DATA_PATH` outside the source tree.
-3. Supply a strong `SHAM_JWT_SECRET` through a secret store/environment.
-4. Run SHAM as an unprivileged OS user.
-5. Configure proxy trust narrowly.
+```text
+http://127.0.0.1:8080
+```
+
+If SHAM is running on another server, replace `127.0.0.1` with that server's address.
+
+The first successfully created account becomes the administrator. SHAM then locks ordinary public registration unless an administrator explicitly changes the registration policy.
+
+### What the base Compose file exposes
+
+The supplied Compose file publishes:
+
+- `8080` — SHAM dashboard/API.
+- `80` — shared HTTP edge listener.
+- `443` — shared HTTPS edge listener.
+- `4100-4199` — host port mappings reserved for per-site listeners; whether a site is reachable directly on one of these ports depends on its bind/routing configuration.
+
+It mounts:
+
+```text
+./sham-data  →  /data
+```
+
+The base Compose file deliberately **does not** mount `/var/run/docker.sock`.
+
+> [!NOTE]
+> The container runs as a non-root user. If a Linux host reports permission errors for `/data`, make sure `./sham-data` is writable by the container user. Avoid solving this by making the directory world-writable.
+
+## 3. Enable Docker-managed application workloads
+
+Skip this section if you do not need SHAM to launch containers or Compose projects.
+
+When SHAM itself runs in Docker, the host Docker daemon cannot see paths such as `/data/sites/...` inside the SHAM container. SHAM therefore needs the **host-side path** that corresponds to `/data`.
+
+Set the host data path and Docker socket group. On a typical Linux Docker host:
+
+```bash
+export SHAM_DOCKER_HOST_DATA_PATH="$(pwd)/sham-data"
+export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+```
+
+If your platform uses a different `stat` syntax, set `DOCKER_GID` to the group ID that owns the Docker socket.
+
+Then start SHAM with both Compose files:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.isolation.yml \
+  up -d --build
+```
+
+The resulting layout is:
+
+```text
+Docker host
+├── SHAM container
+│   ├── /data → ./sham-data
+│   └── /var/run/docker.sock ─────────┐
+│                                     │
+│                 Docker CLI inside SHAM
+│                                     │
+└── host Docker daemon ◀──────────────┘
+    ├── managed app container A
+    ├── managed app container B
+    └── managed Compose project
+```
+
+`SHAM_DOCKER_HOST_DATA_PATH` must be an **absolute host path**. It lets SHAM translate a container-internal path such as:
+
+```text
+/data/sites/12/releases/abc123
+```
+
+into the host-visible equivalent, for example:
+
+```text
+/srv/sham/sham-data/sites/12/releases/abc123
+```
+
+That translation is required when the host daemon needs a build context or bind mount.
+
+See [Runtimes and Docker](runtimes-and-docker.md) for container restrictions, networks, image modes, Dockerfile builds, Buildpacks, Nixpacks, and Compose behavior.
+
+## 4. Production basics before exposing the dashboard
+
+Before making the instance public:
+
+1. Put the dashboard behind HTTPS or otherwise restrict administrative ingress.
+2. Keep `./sham-data` persistent and back it up independently.
+3. Supply a strong `SHAM_JWT_SECRET` through your secret-management/deployment mechanism if you do not want SHAM to persist a generated signing secret under the data path.
+4. Configure `SHAM_TRUST_PROXY` and trusted edge proxies narrowly.
+5. Publish only the ports you actually need.
 6. Mount the Docker socket only if Docker-managed application features are required.
-7. Keep independent backups of the complete SHAM data path.
+7. Treat anyone who can deploy trusted runtime/build/plugin code as having meaningful authority over the host.
 
-See [Configuration reference](configuration-reference.md) for environment settings.
+See [Operations and security](operations-and-security.md) and [Configuration reference](configuration-reference.md) before exposing a production instance.
 
-## 4. Understand persistent data
+## 5. Understand persistent data
 
 `SHAM_DATA_PATH` contains private mutable instance state, including:
 
@@ -58,25 +178,19 @@ See [Configuration reference](configuration-reference.md) for environment settin
 - Backups and update state.
 - Runtime metadata.
 
-Do not commit this directory. A generated `data/.jwt-secret` is instance state, not source code.
+In the supplied Docker Compose setup, `SHAM_DATA_PATH` is `/data`, backed by `./sham-data` on the host.
 
-Before distributing source, run:
+Do not commit this directory. A generated `.jwt-secret` under the data path is instance state, not source code.
 
-```bash
-npm run release:check
-```
+## 6. Create your first site
 
-## 5. Create a site
-
-The wizard offers four primary source choices.
+Open **Sites** in the dashboard and create a site. The wizard offers four primary source choices.
 
 ### Upload
 
 Upload a normal ZIP or select a folder from the browser. Use this for static sites or source trees you want SHAM to run directly.
 
 SHAM strips one common enclosing directory. For example, a selected folder containing `my-site/index.html` is installed with `index.html` at the site root.
-
-The multipart form is bounded, but the current field-count allowance includes the expanded runtime/site configuration. Older builds could report `Upload rejected: Too many fields`; see [Troubleshooting](troubleshooting.md) if you encounter that message.
 
 ### Git repository
 
@@ -86,31 +200,31 @@ Git sites support install/build commands, immutable releases, previews, webhooks
 
 ### Docker image
 
-Supply an existing OCI image and the container port the application listens on. SHAM preserves the image filesystem; it does not mount an empty uploaded project over the application image.
+Supply an existing OCI image and the container port the application listens on.
 
-See [Runtimes and Docker](runtimes-and-docker.md).
+This requires Docker daemon access when SHAM itself is containerized, so start SHAM with the isolation overlay described above.
 
 ### Reverse proxy
 
 Use this when the application lifecycle is managed outside SHAM. Configure the upstream host/port and let SHAM provide the public listener/domain/policy layer.
 
-## 6. Choose a runtime
+## 7. Choose a runtime
 
 SHAM has five runtime drivers:
 
 - **Static** — serve files directly.
-- **Process** — execute a managed host process.
-- **Container** — run an OCI container from an image or source-to-image build.
+- **Process** — execute a managed process in the SHAM runtime environment.
+- **Container** — run an OCI container from an existing image or source-to-image build.
 - **Compose** — run a constrained Docker Compose application.
 - **Proxy** — route to an external upstream.
 
-Process presets currently include Node, npm, Bun, Deno, FastAPI, Django, Go, Java, and Custom.
+Process presets currently include Node, npm, Bun, Deno, FastAPI, Django, Go, Java, and Custom. The required executable/runtime must exist in the environment where that process driver executes.
 
-Container presets include Existing image, Dockerfile, Buildpacks, and Nixpacks.
+Container presets include Existing image, Dockerfile, Buildpacks, and Nixpacks. Container and Compose modes require Docker daemon access.
 
-## 7. Make server applications listen correctly
+## 8. Make server applications listen correctly
 
-Managed application servers should bind the `HOST`/port value SHAM injects.
+Managed application servers should use the host/port values SHAM injects rather than hard-coding a public listener.
 
 Example Node/Express:
 
@@ -119,58 +233,97 @@ const express = require('express');
 const app = express();
 
 app.get('/health', (_req, res) => res.sendStatus(204));
-app.get('/', (_req, res) => res.send('Hello'));
+app.get('/', (_req, res) => res.send('Hello from SHAM'));
 
 app.listen(Number(process.env.PORT), process.env.HOST || '127.0.0.1');
 ```
 
-For framework-specific presets, use the generated/default command as a starting point and adjust module names/paths for your application.
+For framework-specific presets, use the generated/default command as a starting point and adjust module names and paths for your application.
 
-## 8. Configure readiness
+## 9. Configure readiness
 
 A process opening a socket does not always mean the application is ready to serve production traffic.
 
-Prefer an HTTP readiness endpoint that confirms the application has completed critical initialization. SHAM supports TCP, HTTP, command, and disabled readiness types where appropriate.
+Prefer an HTTP readiness endpoint that confirms critical initialization is complete. SHAM supports TCP, HTTP, command, and disabled readiness types where appropriate.
 
-Git/release activation follows this general flow:
+A release deployment generally follows this flow:
 
 1. Clone/build into staging.
-2. Read/validate repository manifest.
-3. Move candidate to its final immutable release path.
-4. Start candidate runtime.
+2. Read and validate repository policy.
+3. Move the candidate to its immutable release path.
+4. Start the candidate runtime.
 5. Wait for readiness.
 6. Switch traffic to the candidate.
 7. Drain the previous backend.
-8. Stop previous backend.
-9. Persist active release metadata.
+8. Stop the previous backend.
+9. Persist active-release metadata.
 
 A candidate that fails before traffic switching does not replace the existing backend.
 
-## 9. Learn the dashboard
+## 10. Useful Docker commands
 
-The left navigation includes Dashboard, Sites, Observability, Performance, Security, Extensions, and Settings.
+Start or rebuild SHAM:
 
-The four Dashboard attention cards are interactive drilldowns for:
+```bash
+docker compose up -d --build
+```
 
-- Unhealthy sites.
-- Recent failed deployments.
-- Active alerts.
-- Automated traffic.
+View status:
 
-Press **Ctrl/Cmd+K** to search settings, websites, site files/logs/settings, performance, documentation, and common runtime/deployment actions.
+```bash
+docker compose ps
+```
 
-See [Dashboard and UI](dashboard-and-ui.md).
+Follow logs:
 
-## 10. Optional next steps
+```bash
+docker compose logs -f sham
+```
 
-- Connect a Git provider and enable signed/provider webhooks.
-- Add HTTP readiness/liveness probes.
+Restart the control plane:
+
+```bash
+docker compose restart sham
+```
+
+Stop the stack without deleting `./sham-data`:
+
+```bash
+docker compose down
+```
+
+If you use the isolation overlay, include both `-f` arguments in later `docker compose` commands as well so Compose evaluates the same project definition.
+
+## Run SHAM directly from source instead
+
+Direct Node execution is supported, but it is best treated as the development/manual-install path rather than the default getting-started path.
+
+```bash
+cp .env.example .env
+npm ci
+npm start
+```
+
+The default source configuration listens on `127.0.0.1:8080` and stores mutable state under `./data` unless you change the environment.
+
+When running directly on the host, optional features depend on the corresponding host executables being installed: Docker, Git, Certbot, `pack`, `nixpacks`, Restic, AWS CLI, SFTP, and so on.
+
+Before distributing source, run:
+
+```bash
+npm run release:check
+```
+
+## Next steps
+
+- Read [Runtimes and Docker](runtimes-and-docker.md) before enabling Docker-managed sites.
+- Add an HTTP readiness/liveness probe to server applications.
+- Connect a Git provider and configure verified deployment webhooks.
 - Configure environment variables and secrets.
 - Configure backups and test a restore.
-- Enable OIDC/passkeys/TOTP according to your identity model.
-- Configure Cloudflare/Certbot/Tunnels if needed.
+- Enable OIDC, passkeys, or TOTP according to your identity model.
+- Configure Cloudflare, Certbot, or Tunnels if needed.
 - Create a scoped API token for CI/CD.
-- Try the administrator Plugin playground before packaging a plugin.
 
 ## Updating SHAM
 
