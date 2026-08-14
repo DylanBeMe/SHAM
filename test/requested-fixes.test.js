@@ -164,3 +164,44 @@ test('Docker documentation defaults to the published GHCR image', () => {
   assert.doesNotMatch(read('README.md'), /docker build -t sham/);
   assert.doesNotMatch(read('docs/getting-started.md'), /docker compose up -d --build/);
 });
+
+
+test('requested dashboard UI fixes stay wired to dedicated themed surfaces', () => {
+  const html = read('public/index.html');
+  const app = read('public/app.js');
+  const css = read('public/styles.css');
+  assert.match(html, /id="command-button" class="nav-item"/);
+  assert.match(html, /id="operations-tab-appearance"/);
+  assert.match(html, /id="operations-appearance"/);
+  assert.doesNotMatch(html, /id="theme-dialog"/);
+  assert.doesNotMatch(html, /data-site-template="proxy"/);
+  assert.match(html, /id="performance-rule-dialog"/);
+  assert.match(html, /id="performance-alert-rules" class="performance-rule-list"/);
+  assert.match(app, /templatePicker\?\.classList\.toggle\('is-disabled', proxySelected\)/);
+  assert.match(app, /button\.disabled = proxySelected/);
+  assert.match(app, /const currentSource = \$\('#site-source'\)\.value \|\| 'upload'/);
+  assert.doesNotMatch(app, /const source = preset\.source === 'git'/);
+  assert.match(css, /\.license-modal \.license-content/);
+  assert.match(css, /#environment-form[\s\S]*margin-bottom: 1rem/);
+  assert.match(css, /\.git-provider-row \{[\s\S]*180px/);
+  assert.match(css, /\.performance-rule-card/);
+  assert.match(css, /\.performance-chart \.chart-lane/);
+});
+
+test('passkey relying-party id is derived from the same canonical origin as the challenge', () => {
+  const server = read('src/server.js');
+  assert.match(server, /function requestRpId\(req\) \{[\s\S]*new URL\(requestOrigin\(req\)\)\.hostname/);
+  assert.doesNotMatch(server, /function requestRpId\(req\) \{[\s\S]{0,160}req\.hostname/);
+});
+
+test('password credential fields expose password-manager semantics', () => {
+  const html = read('public/index.html');
+  const app = read('public/app.js');
+  assert.match(html, /id="auth-username" name="username" autocomplete="username"/);
+  assert.match(html, /id="auth-password" name="password" type="password" autocomplete="current-password"/);
+  assert.match(html, /id="action-username"[^>]*name="username"[^>]*autocomplete="username"/);
+  assert.match(app, /actionInput\.type = passwordInput \? 'password' : inputType/);
+  assert.match(app, /actionInput\.autocomplete = passwordInput && autocomplete === 'off' \? 'current-password' : autocomplete/);
+  assert.match(app, /actionInput\.name = passwordInput \? 'password' : 'action-input'/);
+  assert.match(app, /Confirm passkey enrollment[\s\S]*inputType: 'password'[\s\S]*autocomplete: 'current-password'/);
+});

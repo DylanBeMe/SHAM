@@ -401,6 +401,13 @@ function setSiteSource(source) {
   if (normalized === 'image' && !hasRuntimeCapability('docker')) normalized = 'upload';
   $('#site-source').value = normalized;
   $$('[data-site-source]').forEach((button) => { const active = button.dataset.siteSource === normalized; button.classList.toggle('active', active); button.setAttribute('aria-checked', String(active)); });
+  const templatePicker = $('.template-picker');
+  const proxySelected = normalized === 'proxy';
+  templatePicker?.classList.toggle('is-disabled', proxySelected);
+  $$('[data-site-template]', templatePicker).forEach((button) => {
+    button.disabled = proxySelected;
+    button.setAttribute('aria-disabled', String(proxySelected));
+  });
   $('#drop-zone').hidden = normalized !== 'upload';
   $('#git-source-fields').hidden = normalized !== 'git';
   $('#proxy-source-fields').hidden = normalized !== 'proxy';
@@ -434,7 +441,11 @@ function applySiteTemplate(template) {
   const preset = presets[template];
   if (!preset) return;
   if (['dockerimage', 'dockerfile', 'compose'].includes(template) && !hasRuntimeCapability('docker')) return;
-  const source = preset.source === 'git' && (!hasRuntimeCapability('git') || state.user?.role !== 'admin') ? 'upload' : preset.source;
+  const currentSource = $('#site-source').value || 'upload';
+  let source = currentSource;
+  if (preset.source === 'image') source = 'image';
+  else if (!['upload', 'git'].includes(source)) source = 'upload';
+  if (source === 'git' && (!hasRuntimeCapability('git') || state.user?.role !== 'admin')) source = 'upload';
   setSiteSource(source);
   $('#site-runtime').value = preset.runtime;
   if (preset.entry) $('#site-entry').value = preset.entry;

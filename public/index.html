@@ -28,8 +28,8 @@
           <h2 id="auth-title">Sign in</h2>
           <p id="auth-description" class="muted">Manage your SHAM instance.</p>
         </div>
-        <label><span>Username</span><input id="auth-username" autocomplete="username" minlength="3" maxlength="40" required autofocus></label>
-        <label id="auth-password-wrap"><span>Password</span><input id="auth-password" type="password" autocomplete="current-password" minlength="12" maxlength="200" required></label>
+        <label><span>Username</span><input id="auth-username" name="username" autocomplete="username" minlength="3" maxlength="40" required autofocus></label>
+        <label id="auth-password-wrap"><span>Password</span><input id="auth-password" name="password" type="password" autocomplete="current-password" minlength="12" maxlength="200" required></label>
         <section id="auth-mfa" class="auth-mfa" hidden>
           <label><span>Authenticator or recovery code</span><input id="auth-mfa-code" inputmode="numeric" autocomplete="one-time-code" maxlength="32" placeholder="123456"></label>
           <button id="auth-passkey" class="button secondary wide" type="button" hidden>Use a passkey</button>
@@ -55,12 +55,12 @@
         <button class="nav-item" data-section="plugins" type="button"><span>◇</span>Extensions</button>
         <div id="plugin-nav" class="plugin-nav"></div>
         <button class="nav-item admin-only" data-section="operations" type="button"><span>⚙</span>Settings</button>
+        <button id="command-button" class="nav-item" type="button" title="Command palette (Ctrl/Cmd+K)" aria-label="Open command palette"><span>⌘</span>Command palette</button>
         <button class="nav-item" data-section="documentation" type="button"><span>?</span>Documentation</button>
         <button id="license-button" class="nav-item" type="button"><span>ⓘ</span>License</button>
       </nav>
       <div class="sidebar-footer">
-        <div class="sidebar-footer-tools"><button id="command-button" class="icon-button" type="button" title="Command palette (Ctrl/Cmd+K)" aria-label="Open command palette">⌘</button><button id="theme-button" class="icon-button" type="button" title="Appearance" aria-label="Customize appearance">◐</button></div>
-        <div class="user-chip"><span id="user-avatar">A</span><div><strong id="user-name">Admin</strong><small id="user-role">Administrator</small></div></div>
+        <div class="user-chip"><div><strong id="user-name">Admin</strong><small id="user-role">Administrator</small></div></div>
         <button id="logout-button" class="sidebar-logout" type="button" title="Sign out"><span aria-hidden="true">⇥</span><span class="sidebar-logout-label">Sign out</span></button>
       </div>
     </aside>
@@ -135,12 +135,12 @@
           <article class="stat-card"><span>Hosted traffic</span><strong id="perf-traffic">0 req/s</strong><small id="perf-throughput">0 B/s · 0% errors</small></article>
         </div>
         <div class="performance-grid">
-          <article class="panel"><div class="panel-heading"><div><h2>Resource history</h2><p class="muted">Normalized SHAM CPU, memory, and event-loop trends. Use the summary cards for absolute values.</p></div></div><svg id="performance-chart" class="performance-chart" viewBox="0 0 900 260" role="img" aria-label="Normalized performance history chart"></svg></article>
+          <article class="panel"><div class="panel-heading"><div><h2>Resource history</h2><p class="muted">CPU, memory, and event-loop history in separate lanes so each metric stays readable without mixing units.</p></div></div><svg id="performance-chart" class="performance-chart" viewBox="0 0 900 300" role="img" aria-label="Normalized performance history chart"></svg></article>
           <article class="panel"><div class="panel-heading"><div><h2>Active alerts</h2><p class="muted">Threshold and runtime safety notifications.</p></div></div><div id="performance-alerts" class="event-list"></div></article>
         </div>
         <div class="performance-grid">
-          <article class="panel"><div class="panel-heading"><div><h2>Per-site history</h2><p class="muted">Seven-day CPU and p50/p95 latency samples for a managed runtime.</p></div><select id="performance-site-history-select" aria-label="Site performance history"></select></div><svg id="performance-site-chart" class="performance-chart" viewBox="0 0 900 260" role="img" aria-label="Selected site CPU and response latency history"></svg><p id="performance-site-history-detail" class="muted"></p></article>
-          <article class="panel"><div class="panel-heading"><div><h2>Per-site alert rules</h2><p class="muted">Override global alerts with site-specific CPU, memory, p95 latency, request-rate, error-rate, or traffic-spike thresholds.</p></div><button id="performance-add-rule" class="button secondary" type="button">＋ Rule</button></div><div id="performance-alert-rules" class="config-row-list"></div><div class="form-actions"><button id="performance-save-rules" class="button primary" type="button">Save rules</button></div></article>
+          <article class="panel"><div class="panel-heading"><div><h2>Per-site history</h2><p class="muted">Seven-day CPU and latency history in separate lanes for the selected managed runtime.</p></div><select id="performance-site-history-select" aria-label="Site performance history"></select></div><svg id="performance-site-chart" class="performance-chart" viewBox="0 0 900 300" role="img" aria-label="Selected site CPU and response latency history"></svg><p id="performance-site-history-detail" class="muted"></p></article>
+          <article class="panel"><div class="panel-heading"><div><h2>Per-site alert rules</h2><p class="muted">Override global alerts with site-specific CPU, memory, p95 latency, request-rate, error-rate, or traffic-spike thresholds.</p></div><button id="performance-add-rule" class="button secondary" type="button">＋ Rule</button></div><div id="performance-alert-rules" class="performance-rule-list"></div><div class="form-actions"><button id="performance-save-rules" class="button primary" type="button">Save rules</button></div></article>
         </div>
         <article class="panel"><div class="panel-heading"><div><h2>Hosted runtimes</h2><p class="muted">CPU, process memory, latency, health checks, connections, and restart activity.</p></div></div><div class="table-wrap"><table><thead><tr><th>Site</th><th>Runtime</th><th>CPU</th><th>Requests</th><th>Latency</th><th>Errors</th><th>Memory</th><th>Health</th><th>Connections</th><th>Restarts</th></tr></thead><tbody id="performance-sites"></tbody></table></div></article>
       </section>
@@ -349,7 +349,43 @@ exports.activate = ({ data, settings, log }) =&gt; ({
           <button id="operations-tab-configuration" class="tab" data-operations-tab="configuration" type="button" role="tab" aria-selected="false" aria-controls="operations-configuration" tabindex="-1">Configuration</button>
           <button id="operations-tab-automation" class="tab" data-operations-tab="automation" type="button" role="tab" aria-selected="false" aria-controls="operations-automation" tabindex="-1">Automation</button>
           <button id="operations-tab-instance" class="tab" data-operations-tab="instance" type="button" role="tab" aria-selected="false" aria-controls="operations-instance" tabindex="-1">Instance</button>
+          <button id="operations-tab-appearance" class="tab" data-operations-tab="appearance" type="button" role="tab" aria-selected="false" aria-controls="operations-appearance" tabindex="-1">Appearance</button>
           <button id="operations-tab-administration" class="tab" data-operations-tab="administration" type="button" role="tab" aria-selected="false" aria-controls="operations-administration" tabindex="-1">Administration</button>
+        </div>
+
+        <div id="operations-appearance" class="operations-tab-panel" role="tabpanel" aria-labelledby="operations-tab-appearance" hidden>
+          <article class="panel appearance-settings-panel">
+            <div class="panel-heading"><div><p class="eyebrow">Appearance</p><h2>Theme</h2><p class="muted">Choose the dashboard color mode and palette. This preference is stored in this browser.</p></div></div>
+            <form id="theme-form" class="appearance-settings-form">
+              <section class="theme-settings-section theme-mode-section">
+                <div><span class="field-title">Color mode</span><p class="muted">Follow your device or keep SHAM in a light or dark interface.</p></div>
+                <div class="theme-mode-toggle" role="radiogroup" aria-label="Color mode">
+                  <button class="theme-mode-option" data-theme-mode="system" type="button" role="radio" aria-checked="true">System</button>
+                  <button class="theme-mode-option" data-theme-mode="light" type="button" role="radio" aria-checked="false">Light</button>
+                  <button class="theme-mode-option" data-theme-mode="dark" type="button" role="radio" aria-checked="false">Dark</button>
+                </div>
+              </section>
+              <section class="theme-settings-section">
+                <div><span class="field-title">Theme</span><p class="muted">Choose an accent palette independently from color mode.</p></div>
+                <div class="theme-presets" role="radiogroup" aria-label="Theme presets">
+                  <button class="theme-preset" data-theme-preset="purple" type="button"><span class="theme-preview purple"></span><strong>Purple</strong><small>Default violet</small></button>
+                  <button class="theme-preset" data-theme-preset="midnight" type="button"><span class="theme-preview midnight"></span><strong>Midnight</strong><small>Cool blue</small></button>
+                  <button class="theme-preset" data-theme-preset="emerald" type="button"><span class="theme-preview emerald"></span><strong>Emerald</strong><small>Green accent</small></button>
+                  <button class="theme-preset" data-theme-preset="custom" type="button"><span class="theme-preview custom"></span><strong>Custom</strong><small>Your palette</small></button>
+                </div>
+              </section>
+              <section id="custom-theme-fields" class="theme-settings-section form-grid" hidden>
+                <label><span>Accent</span><input id="theme-accent" type="color" value="#a970ff"></label>
+                <label><span>Secondary accent</span><input id="theme-accent-secondary" type="color" value="#d7a7ff"></label>
+                <label><span>Background</span><input id="theme-background" type="color" value="#0c0717"></label>
+                <label><span>Panel</span><input id="theme-panel" type="color" value="#1d1230"></label>
+                <label><span>Text</span><input id="theme-text" type="color" value="#f7f2ff"></label>
+                <label><span>Corner radius</span><input id="theme-radius" type="range" min="8" max="28" value="18"><small><span id="theme-radius-value">18</span> px</small></label>
+              </section>
+              <p id="theme-form-error" class="form-error" role="status" aria-live="polite"></p>
+              <div class="form-actions appearance-actions"><button id="theme-reset" class="button ghost" type="button">Reset</button><button class="button primary" type="submit">Apply theme</button></div>
+            </form>
+          </article>
         </div>
 
         <div id="operations-delivery" class="operations-tab-panel" role="tabpanel" aria-labelledby="operations-tab-delivery">
@@ -526,7 +562,7 @@ exports.activate = ({ data, settings, log }) =&gt; ({
           <button class="source-card" data-site-source="proxy" type="button" role="radio" aria-checked="false"><strong>Reverse proxy</strong><small>Existing HTTP service</small></button>
         </div>
         <input id="site-source" type="hidden" value="upload">
-        <div class="template-picker"><span class="field-title">Template</span><div class="template-grid" role="radiogroup" aria-label="Site template"><button type="button" role="radio" aria-checked="false" data-site-template="static">Static HTML</button><button type="button" role="radio" aria-checked="false" data-site-template="vite">Vite / React</button><button type="button" role="radio" aria-checked="false" data-site-template="astro">Astro</button><button type="button" role="radio" aria-checked="false" data-site-template="hugo">Hugo</button><button type="button" role="radio" aria-checked="false" data-site-template="next">Next.js</button><button type="button" role="radio" aria-checked="false" data-site-template="node">Node / Express</button><button type="button" role="radio" aria-checked="false" data-site-template="fastapi">FastAPI</button><button type="button" role="radio" aria-checked="false" data-site-template="django">Django</button><button type="button" role="radio" aria-checked="false" data-site-template="bun">Bun</button><button type="button" role="radio" aria-checked="false" data-site-template="deno">Deno</button><button type="button" role="radio" aria-checked="false" data-site-template="go">Go</button><button type="button" role="radio" aria-checked="false" data-site-template="java">Java</button><button type="button" role="radio" aria-checked="false" data-site-template="dockerimage" data-requires-capability="docker">Docker image</button><button type="button" role="radio" aria-checked="false" data-site-template="dockerfile" data-requires-capability="docker">Dockerfile</button><button type="button" role="radio" aria-checked="false" data-site-template="compose" data-requires-capability="docker">Docker Compose</button><button type="button" role="radio" aria-checked="false" data-site-template="proxy">Reverse proxy</button><button type="button" role="radio" aria-checked="false" data-site-template="custom">Custom process</button></div></div>
+        <div class="template-picker"><span class="field-title">Template</span><div class="template-grid" role="radiogroup" aria-label="Site template"><button type="button" role="radio" aria-checked="false" data-site-template="static">Static HTML</button><button type="button" role="radio" aria-checked="false" data-site-template="vite">Vite / React</button><button type="button" role="radio" aria-checked="false" data-site-template="astro">Astro</button><button type="button" role="radio" aria-checked="false" data-site-template="hugo">Hugo</button><button type="button" role="radio" aria-checked="false" data-site-template="next">Next.js</button><button type="button" role="radio" aria-checked="false" data-site-template="node">Node / Express</button><button type="button" role="radio" aria-checked="false" data-site-template="fastapi">FastAPI</button><button type="button" role="radio" aria-checked="false" data-site-template="django">Django</button><button type="button" role="radio" aria-checked="false" data-site-template="bun">Bun</button><button type="button" role="radio" aria-checked="false" data-site-template="deno">Deno</button><button type="button" role="radio" aria-checked="false" data-site-template="go">Go</button><button type="button" role="radio" aria-checked="false" data-site-template="java">Java</button><button type="button" role="radio" aria-checked="false" data-site-template="dockerimage" data-requires-capability="docker">Docker image</button><button type="button" role="radio" aria-checked="false" data-site-template="dockerfile" data-requires-capability="docker">Dockerfile</button><button type="button" role="radio" aria-checked="false" data-site-template="compose" data-requires-capability="docker">Docker Compose</button><button type="button" role="radio" aria-checked="false" data-site-template="custom">Custom process</button></div></div>
         <div id="git-source-fields" class="form-grid" hidden>
           <div class="span-2 git-repository-picker">
             <label><span>Connected provider</span><select id="site-create-git-provider"><option value="">Paste URL manually</option><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket Cloud</option><option value="gitea">Gitea</option><option value="forgejo">Forgejo</option></select></label>
@@ -709,50 +745,31 @@ exports.activate = ({ data, settings, log }) =&gt; ({
 
   <dialog id="api-token-dialog" class="modal" aria-labelledby="api-token-title"><div class="modal-card"><header class="modal-header"><div><p class="eyebrow">Shown once</p><h2 id="api-token-title">API token</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></header><p class="notice warning">Copy this token now. SHAM stores only its hash and cannot display it again.</p><pre id="api-token-value" class="recovery-codes"></pre><footer class="modal-footer"><button id="copy-api-token" class="button secondary" type="button">Copy token</button><button class="button primary" data-close-dialog type="button">Done</button></footer></div></dialog>
 
-  <dialog id="theme-dialog" class="modal theme-modal" aria-labelledby="theme-title">
-    <form id="theme-form" class="modal-card">
-      <header class="modal-header"><div><p class="eyebrow">Appearance</p><h2 id="theme-title">Choose a theme</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></header>
-      <section class="form-section theme-mode-section">
-        <div><span class="field-title">Color mode</span><p class="muted">Choose whether SHAM follows your device or always uses a light or dark interface.</p></div>
-        <div class="theme-mode-toggle" role="radiogroup" aria-label="Color mode">
-          <button class="theme-mode-option" data-theme-mode="system" type="button" role="radio" aria-checked="true">System</button>
-          <button class="theme-mode-option" data-theme-mode="light" type="button" role="radio" aria-checked="false">Light</button>
-          <button class="theme-mode-option" data-theme-mode="dark" type="button" role="radio" aria-checked="false">Dark</button>
-        </div>
-      </section>
-      <section class="form-section">
-        <div><span class="field-title">Theme</span><p class="muted">Choose an accent palette independently from color mode.</p></div>
-        <div class="theme-presets" role="radiogroup" aria-label="Theme presets">
-          <button class="theme-preset" data-theme-preset="purple" type="button"><span class="theme-preview purple"></span><strong>Purple</strong><small>Default violet</small></button>
-          <button class="theme-preset" data-theme-preset="midnight" type="button"><span class="theme-preview midnight"></span><strong>Midnight</strong><small>Cool blue</small></button>
-          <button class="theme-preset" data-theme-preset="emerald" type="button"><span class="theme-preview emerald"></span><strong>Emerald</strong><small>Green accent</small></button>
-          <button class="theme-preset" data-theme-preset="custom" type="button"><span class="theme-preview custom"></span><strong>Custom</strong><small>Your palette</small></button>
-        </div>
-      </section>
-      <section id="custom-theme-fields" class="form-section form-grid" hidden>
-        <label><span>Accent</span><input id="theme-accent" type="color" value="#a970ff"></label>
-        <label><span>Secondary accent</span><input id="theme-accent-secondary" type="color" value="#d7a7ff"></label>
-        <label><span>Background</span><input id="theme-background" type="color" value="#0c0717"></label>
-        <label><span>Panel</span><input id="theme-panel" type="color" value="#1d1230"></label>
-        <label><span>Text</span><input id="theme-text" type="color" value="#f7f2ff"></label>
-        <label><span>Corner radius</span><input id="theme-radius" type="range" min="8" max="28" value="18"><small><span id="theme-radius-value">18</span> px</small></label>
-      </section>
-      <p id="theme-form-error" class="form-error" role="status" aria-live="polite"></p>
-      <footer class="modal-footer"><button id="theme-reset" class="button ghost" type="button">Reset</button><button class="button primary" type="submit">Apply theme</button></footer>
-    </form>
-  </dialog>
-
-  <dialog id="license-dialog" class="modal" aria-labelledby="license-title"><div class="modal-card large-modal"><header class="modal-header"><div><p class="eyebrow">AGPL-3.0-or-later</p><h2 id="license-title">SHAM license</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></header><p class="muted">The full license text is shown here without leaving the dashboard.</p><pre id="license-content" class="license-content">Loading license…</pre><footer class="modal-footer"><button class="button primary" data-close-dialog type="button">Done</button></footer></div></dialog>
+  <dialog id="license-dialog" class="modal license-modal" aria-labelledby="license-title"><div class="modal-card large-modal"><header class="modal-header"><div><p class="eyebrow">AGPL-3.0-or-later</p><h2 id="license-title">SHAM license</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></header><p class="muted">The full license text is shown here without leaving the dashboard.</p><pre id="license-content" class="license-content">Loading license…</pre><footer class="modal-footer"><button class="button primary" data-close-dialog type="button">Done</button></footer></div></dialog>
 
   <dialog id="action-dialog" class="modal action-modal" aria-labelledby="action-title">
     <form id="action-form" class="modal-card action-card">
       <header class="modal-header"><div><p class="eyebrow">Confirm action</p><h2 id="action-title">Continue?</h2></div><button id="action-close" class="icon-button" type="button" aria-label="Cancel">×</button></header>
-      <div class="action-body"><p id="action-message" class="muted"></p><label id="action-input-wrap" hidden><span id="action-input-label">Value</span><input id="action-input" autocomplete="off"></label><p id="action-error" class="form-error" role="alert"></p></div>
+      <div class="action-body"><p id="action-message" class="muted"></p><input id="action-username" class="password-manager-username" type="text" name="username" autocomplete="username" tabindex="-1" aria-hidden="true"><label id="action-input-wrap" hidden><span id="action-input-label">Value</span><input id="action-input" type="text" autocomplete="off" name="action-input"></label><p id="action-error" class="form-error" role="alert"></p></div>
       <footer class="modal-footer"><button id="action-cancel" class="button ghost" type="button">Cancel</button><button id="action-confirm" class="button primary" type="submit">Continue</button></footer>
     </form>
   </dialog>
 
   <dialog id="alert-destination-dialog" class="modal" aria-labelledby="alert-destination-title"><form id="alert-destination-form" class="modal-card"><header class="modal-header"><div><p class="eyebrow">Operational alerts</p><h2 id="alert-destination-title">Add alert destination</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></header><div class="form-grid compact-grid"><label><span>Name</span><input id="alert-destination-name" maxlength="100" placeholder="On-call alerts" required></label><label><span>Type</span><select id="alert-destination-kind"><option value="webhook">Webhook</option><option value="slack">Slack</option><option value="discord">Discord</option><option value="email">Email / sendmail</option></select></label><label class="span-2"><span id="alert-destination-target-label">Webhook URL</span><input id="alert-destination-target" type="url" maxlength="2048" placeholder="https://hooks.example/…" required></label><div id="alert-destination-webhook-fields" class="span-2 config-editor"><div class="panel-heading compact-heading"><div><span class="field-label">Optional HTTP headers</span><small>Header values are encrypted with the destination configuration.</small></div><button id="add-alert-header" class="button ghost" type="button">＋ Header</button></div><div id="alert-header-rows" class="config-row-list"></div></div><div id="alert-destination-email-fields" class="span-2 form-grid compact-grid" hidden><label><span>From address (optional)</span><input id="alert-destination-from" type="email" maxlength="320" placeholder="sham@example.com"></label><label><span>Sendmail binary (optional)</span><input id="alert-destination-sendmail" maxlength="512" placeholder="sendmail"></label></div></div><p id="alert-destination-error" class="form-error" role="alert"></p><footer class="modal-footer"><button class="button ghost" data-close-dialog type="button">Cancel</button><button class="button primary" type="submit">Save destination</button></footer></form></dialog>
+
+  <dialog id="performance-rule-dialog" class="modal performance-rule-modal" aria-labelledby="performance-rule-title">
+    <form id="performance-rule-form" class="modal-card">
+      <header class="modal-header"><div><p class="eyebrow">Per-site alert</p><h2 id="performance-rule-title">Add alert rule</h2><p class="muted">Set one threshold for the selected site. Global thresholds still apply.</p></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></header>
+      <div class="performance-rule-editor">
+        <label><span>Metric</span><select id="performance-rule-kind"><option value="cpu_percent">CPU %</option><option value="memory_percent">Memory % of limit</option><option value="p95_response_ms">p95 latency (ms)</option><option value="request_rate">Requests / second</option><option value="error_percent">Error rate %</option><option value="traffic_multiplier">Traffic multiplier</option></select></label>
+        <label><span>Threshold</span><input id="performance-rule-threshold" type="number" min="0" step="0.1" value="90" required><small id="performance-rule-threshold-help">Alert when CPU reaches or exceeds this percentage.</small></label>
+        <label><span>Severity</span><select id="performance-rule-severity"><option value="warning">Warning</option><option value="critical">Critical</option></select></label>
+        <label class="checkbox-line"><input id="performance-rule-enabled" type="checkbox" checked><span>Rule enabled</span></label>
+        <p id="performance-rule-error" class="form-error" role="alert"></p>
+      </div>
+      <footer class="modal-footer"><button class="button ghost" data-close-dialog type="button">Cancel</button><button id="performance-rule-submit" class="button primary" type="submit">Add rule</button></footer>
+    </form>
+  </dialog>
 
   <dialog id="command-dialog" class="modal command-modal" aria-labelledby="command-title"><div class="modal-card"><header class="modal-header"><div><p class="eyebrow">Quick actions</p><h2 id="command-title">Command palette</h2></div><button class="icon-button" data-close-dialog type="button" aria-label="Close">×</button></header><input id="command-search" class="command-search" autocomplete="off" placeholder="Search sites, settings, metrics and actions…" aria-label="Search commands"><div id="command-results" class="command-results" role="listbox"></div><footer class="modal-footer"><small class="muted">↑↓ navigate · Enter run · Esc close · Ctrl/Cmd+K open</small></footer></div></dialog>
 
