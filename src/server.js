@@ -284,7 +284,7 @@ function requestOrigin(req) {
 }
 
 function requestRpId(req) {
-  const host = String(req.hostname || '').trim().toLowerCase();
+  const host = String(new URL(requestOrigin(req)).hostname || '').trim().toLowerCase();
   if (!host) throw new Error('The dashboard hostname is unavailable for passkey verification.');
   return host;
 }

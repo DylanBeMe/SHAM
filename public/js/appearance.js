@@ -35,11 +35,6 @@ function updateThemePicker() {
   updateThemeValidation();
 }
 
-$('#theme-button').addEventListener('click', () => {
-  populateThemeDialog();
-  showModal($('#theme-dialog'));
-});
-
 $('.theme-mode-toggle').addEventListener('click', (event) => {
   const button = event.target.closest('[data-theme-mode]');
   if (!button) return;
@@ -114,7 +109,6 @@ $('#theme-form').addEventListener('submit', (event) => {
   state.themeDraft.custom = readCustomTheme();
   if (!updateThemeValidation()) return;
   const persisted = window.SHAM_THEME.save(state.themeDraft);
-  closeModal($('#theme-dialog'));
   const label = state.themeDraft.name === 'custom' ? 'Custom' : state.themeDraft.name[0].toUpperCase() + state.themeDraft.name.slice(1);
   const modeLabel = state.themeDraft.mode[0].toUpperCase() + state.themeDraft.mode.slice(1);
   toast(persisted ? `${label} · ${modeLabel} applied.` : `${label} · ${modeLabel} applied for this session; browser storage is unavailable.`, persisted ? 'success' : 'warning');
@@ -124,3 +118,6 @@ $('#theme-reset').addEventListener('click', () => {
   populateThemeDialog();
   toast(persisted ? 'Theme reset to Purple · System.' : 'Theme reset for this session; browser storage is unavailable.', persisted ? 'success' : 'warning');
 });
+
+$('#operations-tab-appearance')?.addEventListener('click', populateThemeDialog);
+populateThemeDialog();

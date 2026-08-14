@@ -280,6 +280,10 @@ function requestAction({ title, message, confirmLabel = 'Continue', danger = fal
   actionInput.type = passwordInput ? 'password' : inputType;
   actionInput.autocomplete = passwordInput && autocomplete === 'off' ? 'current-password' : autocomplete;
   actionInput.name = passwordInput ? 'password' : 'action-input';
+  actionInput.autocapitalize = passwordInput ? 'none' : '';
+  actionInput.spellcheck = !passwordInput;
+  actionInput.setAttribute('aria-label', inputLabel || 'Value');
+  $('#action-username').value = passwordInput ? String(state.user?.username || $('#auth-username')?.value || '') : '';
   actionInput.value = inputValue;
   actionInput.placeholder = placeholder;
   showModal($('#action-dialog'));
@@ -500,7 +504,6 @@ async function enterDashboard() {
   $('#dashboard-view').hidden = false;
   $('#user-name').textContent = state.user.username;
   $('#user-role').textContent = state.user.role === 'admin' ? 'Administrator' : 'User';
-  $('#user-avatar').textContent = state.user.username.slice(0, 1).toUpperCase();
   $('#audit-panel').hidden = state.user.role !== 'admin';
   $$('.admin-only').forEach((element) => { element.hidden = state.user.role !== 'admin'; });
   mergeInstanceAdministration();

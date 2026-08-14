@@ -71,7 +71,7 @@ test('dashboard exposes the requested controls, analytics, and theme surfaces', 
   const css = fs.readFileSync(path.join(root, 'public', 'styles.css'), 'utf8');
   for (const id of [
     'site-obfuscate', 'site-domain-only', 'site-firewall-enabled', 'traffic-map',
-    'visitor-table', 'theme-button', 'theme-dialog', 'custom-theme-fields'
+    'visitor-table', 'operations-tab-appearance', 'operations-appearance', 'theme-form', 'custom-theme-fields'
   ]) assert.match(html, new RegExp(`id="${id}"`));
   assert.match(app, /cloudflare-firewall/);
   assert.match(app, /renderTrafficOrigins/);
