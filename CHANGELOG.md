@@ -4,6 +4,8 @@ All notable public changes to SHAM are documented here. The project follows Sema
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-08-14
+
 ### Added
 
 - Generic runtime drivers for static content, host processes, OCI containers, Docker Compose projects, and reverse proxies, with presets for Node/npm, Bun, Deno, FastAPI, Django, Go, Java, Dockerfile, Buildpacks, and Nixpacks.

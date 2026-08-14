@@ -10,7 +10,8 @@ const failures = [];
 const requireCondition = (condition, message) => { if (!condition) failures.push(message); };
 
 const pkg = JSON.parse(read('package.json'));
-requireCondition(pkg.version === '1.0.0', 'package.json version must be 1.0.0.');
+const escapedVersion = pkg.version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+requireCondition(/^\d+\.\d+\.\d+$/.test(pkg.version), 'package.json version must be a stable semantic version.');
 requireCondition(pkg.license === 'AGPL-3.0-or-later', 'package.json must declare AGPL-3.0-or-later.');
 requireCondition(pkg.private === true, 'The application package should remain private to prevent accidental npm publication.');
 
@@ -21,7 +22,18 @@ for (const filename of [
 ]) requireCondition(exists(filename), `Required release file is missing: ${filename}`);
 
 requireCondition(/GNU AFFERO GENERAL PUBLIC LICENSE[\s\S]*Version 3, 19 November 2007/.test(read('LICENSE')), 'LICENSE must contain GNU Affero GPL version 3.');
-requireCondition(/Current release: 1\.0\.0/.test(read('README.md')), 'README must identify release 1.0.0.');
+if (exists('package-lock.json')) {
+  const lock = JSON.parse(read('package-lock.json'));
+  requireCondition(lock.version === pkg.version, 'package-lock.json version must match package.json.');
+  requireCondition(lock.packages?.['']?.version === pkg.version, 'package-lock.json root package version must match package.json.');
+}
+
+requireCondition(new RegExp(`Current release: ${escapedVersion}`).test(read('README.md')), `README must identify release ${pkg.version}.`);
+requireCondition(new RegExp(`## \\[${escapedVersion}\\] — \\d{4}-\\d{2}-\\d{2}`).test(read('CHANGELOG.md')), `CHANGELOG must contain a dated ${pkg.version} release entry.`);
+requireCondition(new RegExp(`^ARG VERSION=${escapedVersion}$`, 'm').test(read('Dockerfile')), `Dockerfile default VERSION must match ${pkg.version}.`);
+requireCondition(new RegExp(`VERSION: ${escapedVersion}`).test(read('docker-compose.yml')), `docker-compose.yml build VERSION must match ${pkg.version}.`);
+requireCondition(new RegExp(`VERSION=${escapedVersion}`).test(read('.github/workflows/ci.yml')), `CI Docker smoke build VERSION must match ${pkg.version}.`);
+requireCondition(new RegExp(`ghcr\\.io/<owner>/<repository>:${escapedVersion}`).test(read('RELEASING.md')), `RELEASING.md must use the ${pkg.version} image tag.`);
 requireCondition(/ghcr\.io\/<owner>\/<repository>/.test(read('RELEASING.md')), 'RELEASING.md must explain GHCR image names.');
 requireCondition(/packages:\s*write/.test(read('.github/workflows/docker-publish.yml')), 'Docker workflow must request package write permission.');
 requireCondition(/npm audit --omit=dev --audit-level=high/.test(read('.github/workflows/ci.yml')), 'CI must fail on high-severity production dependency advisories.');

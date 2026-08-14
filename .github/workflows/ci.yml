@@ -65,7 +65,7 @@ jobs:
           cache-from: type=gha,scope=ci-amd64
           cache-to: type=gha,mode=max,scope=ci-amd64
           build-args: |
-            VERSION=1.0.0
+            VERSION=1.1.1
             VCS_REF=${{ github.sha }}
             BUILD_DATE=${{ github.event.repository.updated_at }}
 
