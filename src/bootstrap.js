@@ -30,6 +30,8 @@ function loadUpdateRuntime() {
 
 (async () => {
   exposeImageDependencies();
+  const restored = await require('./backup-restore').applyPendingRestore();
+  if (restored) console.log(`Restored SHAM data from ${restored.archivePath}.`);
   let applied = null;
   let updateRuntime = loadUpdateRuntime();
   try {
@@ -55,7 +57,7 @@ function loadUpdateRuntime() {
         console.error(`SHAM update ${applied.version} failed and rollback also failed: ${rollbackError.message}`);
       }
     } else {
-      console.error(error.message);
+      console.error(error.stack || error.message);
     }
     process.exitCode = 1;
   }

@@ -12,7 +12,7 @@ test.after(() => fs.rmSync(temporaryData, { recursive: true, force: true }));
 const { validateSiteInput } = require('../src/validation');
 const { buildCloudflareFirewallExpression } = require('../src/integrations');
 
-const root = path.resolve(__dirname, '..');
+const { root, source: projectSource } = require('./source-tree');
 
 test('site input supports obfuscation, domain-only access, and firewall settings', () => {
   const site = validateSiteInput({
@@ -67,7 +67,7 @@ test('Cloudflare firewall expressions stay scoped to the site hostname', () => {
 
 test('dashboard exposes the requested controls, analytics, and theme surfaces', () => {
   const html = fs.readFileSync(path.join(root, 'public', 'index.html'), 'utf8');
-  const app = fs.readFileSync(path.join(root, 'public', 'app.js'), 'utf8');
+  const app = projectSource('public/app.js');
   const css = fs.readFileSync(path.join(root, 'public', 'styles.css'), 'utf8');
   for (const id of [
     'site-obfuscate', 'site-domain-only', 'site-firewall-enabled', 'traffic-map',
@@ -84,7 +84,7 @@ test('dashboard exposes the requested controls, analytics, and theme surfaces', 
 });
 
 test('Cloudflare headers are accepted only from trusted edge peers', () => {
-  const source = fs.readFileSync(path.join(root, 'src', 'site-manager.js'), 'utf8');
+  const source = projectSource('src/site-manager.js');
   assert.match(source, /TRUSTED_EDGE_RANGES/);
   assert.match(source, /site\.cloudflare_enabled && trustedEdgePeer\(peerIp\)/);
   assert.match(source, /Chunked request bodies are not accepted/);

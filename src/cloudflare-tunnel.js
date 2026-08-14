@@ -5,7 +5,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { CLOUDFLARED_BIN } = require('./config');
 const { operatorEnvironment } = require('./process-env');
-const { getSecretSetting, setSecretSetting } = require('./secret-store');
+const { decrypt, encrypt, getSecretSetting, setSecretSetting } = require('./secret-store');
 
 const TOKEN_SETTING = 'cloudflare_tunnel_token';
 const ENABLED_SETTING = 'cloudflare_tunnel_enabled';
@@ -71,6 +71,17 @@ function terminateAndWait(child, graceMs = 5000) {
   });
 }
 
+
+async function settleInBatches(items, worker, concurrency = 4) {
+  const results = [];
+  const width = Math.max(1, Math.min(Number(concurrency) || 1, 16));
+  for (let index = 0; index < items.length; index += width) {
+    const batch = items.slice(index, index + width);
+    results.push(...await Promise.allSettled(batch.map(worker)));
+  }
+  return results;
+}
+
 function validateToken(value) {
   const token = String(value || '').trim();
   if (!token || token.length > MAX_TOKEN_LENGTH || /[\s\0]/.test(token)) {
@@ -80,21 +91,44 @@ function validateToken(value) {
 }
 
 class DatabaseTunnelSettingsStore {
-  constructor(db) {
+  constructor(db, siteId = null) {
     this.db = db;
+    this.siteId = siteId === null ? null : Number(siteId);
   }
 
   status() {
+    if (this.siteId !== null) {
+      const row = this.db.prepare('SELECT enabled, token FROM site_cloudflare_tunnels WHERE site_id = ?').get(this.siteId);
+      return { enabled: Boolean(row?.enabled), tokenConfigured: Boolean(row?.token) };
+    }
     const enabled = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(ENABLED_SETTING)?.value === '1';
     const storedToken = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(TOKEN_SETTING)?.value || '';
     return { enabled, tokenConfigured: Boolean(storedToken) };
   }
 
   token() {
+    if (this.siteId !== null) {
+      const stored = this.db.prepare('SELECT token FROM site_cloudflare_tunnels WHERE site_id = ?').get(this.siteId)?.token || '';
+      return decrypt(stored, '');
+    }
     return getSecretSetting(this.db, TOKEN_SETTING, '');
   }
 
   save({ enabled, token, clearToken = false }) {
+    if (this.siteId !== null) {
+      const existing = this.db.prepare('SELECT token FROM site_cloudflare_tunnels WHERE site_id = ?').get(this.siteId)?.token || '';
+      const storedToken = token !== undefined ? encrypt(token) : clearToken ? '' : existing;
+      if (!enabled && !storedToken) {
+        this.db.prepare('DELETE FROM site_cloudflare_tunnels WHERE site_id = ?').run(this.siteId);
+      } else {
+        this.db.prepare(`
+          INSERT INTO site_cloudflare_tunnels (site_id, enabled, token, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(site_id) DO UPDATE SET enabled = excluded.enabled, token = excluded.token, updated_at = CURRENT_TIMESTAMP
+        `).run(this.siteId, enabled ? 1 : 0, storedToken);
+      }
+      return this.status();
+    }
+
     const transaction = this.db.transaction(() => {
       this.db.prepare(`
         INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
@@ -420,9 +454,122 @@ class CloudflareTunnelManager {
   }
 }
 
+class SiteCloudflareTunnelRegistry {
+  constructor({ db, log = () => {}, managerOptions = {}, managerFactory = null } = {}) {
+    if (!db) throw new Error('A database is required for site Cloudflare Tunnels.');
+    this.db = db;
+    this.log = log;
+    this.managerOptions = managerOptions;
+    this.managerFactory = managerFactory;
+    this.managers = new Map();
+  }
+
+  _siteId(siteId) {
+    const id = Number(siteId);
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('A valid site id is required.');
+    return id;
+  }
+
+  _manager(siteId) {
+    const id = this._siteId(siteId);
+    if (!this.managers.has(id)) {
+      const settingsStore = new DatabaseTunnelSettingsStore(this.db, id);
+      const options = {
+        ...this.managerOptions,
+        settingsStore,
+        log: (level, message) => this.log(id, level, message)
+      };
+      this.managers.set(id, this.managerFactory ? this.managerFactory(options, id) : new CloudflareTunnelManager(options));
+    }
+    return this.managers.get(id);
+  }
+
+  available() {
+    const probe = this.managers.values().next().value;
+    if (probe) return Boolean(probe.status().available);
+    const command = this.managerOptions.command || CLOUDFLARED_BIN;
+    const check = this.managerOptions.commandAvailableCheck || commandAvailable;
+    return Boolean(check(command));
+  }
+
+  status(siteId) {
+    const status = this._manager(siteId).status();
+    if (!status.enabled && status.state === 'stopped') return { ...status, state: 'disabled' };
+    return status;
+  }
+
+  summary(siteId) {
+    const status = this.status(siteId);
+    return {
+      available: status.available,
+      enabled: status.enabled,
+      tokenConfigured: status.tokenConfigured,
+      tokenReadable: status.tokenReadable,
+      state: status.state,
+      running: status.running,
+      connected: status.connected,
+      connectedAt: status.connectedAt,
+      restartCount: status.restartCount,
+      lastError: status.lastError
+    };
+  }
+
+  listStatus() {
+    return this.db.prepare('SELECT id, name, domain FROM sites ORDER BY name COLLATE NOCASE, id').all().map((site) => ({
+      siteId: site.id,
+      name: site.name,
+      domain: site.domain || '',
+      ...this.summary(site.id)
+    }));
+  }
+
+  async configure(siteId, input = {}) {
+    await this._manager(siteId).configure(input);
+    return this.status(siteId);
+  }
+
+  async restart(siteId) {
+    await this._manager(siteId).restart();
+    return this.status(siteId);
+  }
+
+  async startEnabled() {
+    const rows = this.db.prepare('SELECT site_id FROM site_cloudflare_tunnels WHERE enabled = 1 ORDER BY site_id').all();
+    const results = await settleInBatches(rows, ({ site_id: siteId }) => this._manager(siteId).start(), 4);
+    for (let index = 0; index < results.length; index += 1) {
+      if (results[index].status === 'rejected') this.log(rows[index].site_id, 'error', `Could not start Cloudflare Tunnel: ${results[index].reason?.message || results[index].reason}`);
+    }
+    return this.listStatus();
+  }
+
+  start(siteId) {
+    return this._manager(siteId).start();
+  }
+
+  async stop(siteId) {
+    const id = this._siteId(siteId);
+    const manager = this.managers.get(id);
+    if (manager) await manager.shutdown();
+    this.managers.delete(id);
+  }
+
+  async remove(siteId) {
+    const id = this._siteId(siteId);
+    await this.stop(id);
+    this.db.prepare('DELETE FROM site_cloudflare_tunnels WHERE site_id = ?').run(id);
+  }
+
+  async shutdown() {
+    const managers = [...this.managers.values()];
+    await settleInBatches(managers, (manager) => manager.shutdown(), 4);
+    this.managers.clear();
+  }
+}
+
 module.exports = {
   CloudflareTunnelManager,
   DatabaseTunnelSettingsStore,
+  SiteCloudflareTunnelRegistry,
   commandAvailable,
   terminateAndWait,
   validateToken,

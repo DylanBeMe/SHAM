@@ -95,7 +95,45 @@ function clearAuthCookie(req, res) {
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 
+function tokenHash(token) {
+  return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+}
+
+function tokenScopes(value) {
+  try {
+    const scopes = JSON.parse(value || '[]');
+    return Array.isArray(scopes) ? scopes.filter((scope) => typeof scope === 'string') : [];
+  } catch { return []; }
+}
+
+function requiredApiScope(req) {
+  const path = String(req.path || req.originalUrl || '');
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    if (/runtime-logs|\/logs(?:\?|$)/.test(path)) return 'logs:read';
+    return 'read';
+  }
+  if (/\/deploy(?:\/|$)|\/releases\/.*\/rollback/.test(path)) return 'deploy';
+  if (/\/(?:start|stop|restart)(?:\?|$)/.test(path)) return 'sites:control';
+  return '*';
+}
+
 function resolveUser(req) {
+  req.authType = null;
+  req.authScopes = [];
+  const authorization = String(req.get?.('authorization') || req.headers?.authorization || '');
+  const bearer = /^Bearer\s+(sham_pat_[A-Za-z0-9_-]{32,256})$/i.exec(authorization)?.[1];
+  if (bearer) {
+    const row = db.prepare(`SELECT tokens.id AS token_id, tokens.scopes_json, tokens.expires_at,
+      users.id, users.username, users.role, users.active, users.totp_enabled, users.created_at
+      FROM api_tokens AS tokens JOIN users ON users.id = tokens.user_id WHERE tokens.token_hash = ?`).get(tokenHash(bearer));
+    if (!row?.active || (row.expires_at && Date.parse(row.expires_at) <= Date.now())) return null;
+    req.authType = 'api-token';
+    req.authScopes = tokenScopes(row.scopes_json);
+    // Keep this write cheap and bounded; precision finer than five minutes is not useful operationally.
+    try { db.prepare("UPDATE api_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = ? AND (last_used_at IS NULL OR last_used_at < datetime('now', '-5 minutes'))").run(row.token_id); } catch { /* telemetry only */ }
+    return { id: row.id, username: row.username, role: row.role, active: row.active, totp_enabled: row.totp_enabled, created_at: row.created_at };
+  }
+
   const token = parseCookies(req.headers.cookie)[COOKIE_NAME];
   if (!token) return null;
   try {
@@ -105,7 +143,9 @@ function resolveUser(req) {
       audience: 'sham-dashboard'
     });
     const user = db.prepare('SELECT id, username, role, active, totp_enabled, created_at FROM users WHERE id = ?').get(Number(payload.sub));
-    return user?.active ? user : null;
+    if (!user?.active) return null;
+    req.authType = 'session';
+    return user;
   } catch {
     return null;
   }
@@ -119,6 +159,10 @@ function optionalAuth(req, _res, next) {
 function requireAuth(req, res, next) {
   req.user = resolveUser(req);
   if (!req.user) return res.status(401).json({ error: 'Authentication required.' });
+  if (req.authType === 'api-token') {
+    const required = requiredApiScope(req);
+    if (!req.authScopes.includes('*') && !req.authScopes.includes(required)) return res.status(403).json({ error: `API token requires the ${required} scope.` });
+  }
   next();
 }
 
@@ -129,6 +173,8 @@ function requireAdmin(req, res, next) {
 
 function sameOriginGuard(req, res, next) {
   if (req.path.startsWith('/api/hooks/deploy/')) return next();
+  // Bearer API tokens are not ambient browser credentials, so they are not susceptible to CSRF.
+  if (/^Bearer\s+sham_pat_/i.test(String(req.get('authorization') || ''))) return next();
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
 
   const fetchSite = req.get('sec-fetch-site');
@@ -201,5 +247,6 @@ module.exports = {
   requireAuth,
   requireAdmin,
   sameOriginGuard,
-  createRateLimiter
+  createRateLimiter,
+  tokenHash
 };

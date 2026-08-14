@@ -3,8 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const root = path.resolve(__dirname, '..');
-const read = (name) => fs.readFileSync(path.join(root, name), 'utf8');
+const { root, source: read } = require('./source-tree');
 
 test('compressed response cache counts variants and deduplicates first-hit work', () => {
   const source = read('src/site-manager.js');
@@ -130,9 +129,9 @@ test('dialog overlays and card shadows remain coherent in light and custom theme
   const css = read('public/styles.css');
   const theme = read('public/theme-init.js');
   assert.match(css, /--overlay-backdrop: rgba\(3, 1, 8, 0\.72\)/);
-  assert.match(css, /html\[data-theme="light"\][\s\S]*--overlay-backdrop: rgba\(36, 23, 51, 0\.48\)/);
-  assert.match(css, /html\[data-theme="light"\][\s\S]*--card-shadow: 0 14px 38px rgba\(54, 31, 77, 0\.12\)/);
-  assert.match(theme, /'--overlay-backdrop': lightCustom \? alpha\(text, 0\.46\) : 'rgba\(0, 0, 0, 0\.72\)'/);
+  assert.match(css, /html\[data-mode="light"\][\s\S]*--overlay-backdrop: rgba\(36, 23, 51, 0\.48\)/);
+  assert.match(css, /html\[data-mode="light"\][\s\S]*--card-shadow: 0 14px 38px rgba\(54, 31, 77, 0\.12\)/);
+  assert.match(theme, /'--overlay-backdrop': light \? alpha\(text, 0\.46\) : 'rgba\(0, 0, 0, 0\.72\)'/);
   assert.match(theme, /'--card-shadow': `0 14px 38px/);
 });
 

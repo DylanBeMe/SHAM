@@ -108,7 +108,7 @@ function setSecretSetting(db, key, value) {
 }
 
 function migrateKnownSecrets(db) {
-  const settingKeys = ['cloudflare_api_token', 'cloudflare_tunnel_token', 'backup_config', 'alert_delivery_config', 'prometheus_token', 'otel_headers'];
+  const settingKeys = ['cloudflare_api_token', 'cloudflare_tunnel_token', 'backup_config', 'alert_delivery_config', 'prometheus_token', 'otel_headers', 'oidc_client_secret'];
   const updateSetting = db.prepare('UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?');
   const updatePlugin = db.prepare('UPDATE plugin_settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE plugin_id = ? AND key = ?');
   const transaction = db.transaction(() => {
@@ -128,6 +128,9 @@ function migrateKnownSecrets(db) {
         if (!stored || isEncrypted(stored)) continue;
         updatePlugin.run(JSON.stringify(encrypt(String(stored))), plugin.id, row.key);
       }
+    }
+    for (const row of db.prepare("SELECT site_id, token FROM site_cloudflare_tunnels WHERE token != ''").all()) {
+      if (!isEncrypted(row.token)) db.prepare('UPDATE site_cloudflare_tunnels SET token = ?, updated_at = CURRENT_TIMESTAMP WHERE site_id = ?').run(encrypt(row.token), row.site_id);
     }
     for (const user of db.prepare('SELECT id, totp_secret FROM users WHERE totp_secret IS NOT NULL AND totp_secret != ?').all('')) {
       if (!isEncrypted(user.totp_secret)) db.prepare('UPDATE users SET totp_secret = ? WHERE id = ?').run(encrypt(user.totp_secret), user.id);
@@ -153,6 +156,9 @@ function rotateMasterKey(db) {
       if (!isEncrypted(parsed)) continue;
       db.prepare('UPDATE plugin_settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE plugin_id = ? AND key = ?')
         .run(JSON.stringify(encrypt(decrypt(parsed), next)), row.plugin_id, row.key);
+    }
+    for (const row of db.prepare("SELECT site_id, token FROM site_cloudflare_tunnels WHERE token != ''").all()) {
+      if (isEncrypted(row.token)) db.prepare('UPDATE site_cloudflare_tunnels SET token = ?, updated_at = CURRENT_TIMESTAMP WHERE site_id = ?').run(encrypt(decrypt(row.token), next), row.site_id);
     }
     for (const row of db.prepare('SELECT id, totp_secret FROM users WHERE totp_secret IS NOT NULL AND totp_secret != ?').all('')) {
       if (isEncrypted(row.totp_secret)) db.prepare('UPDATE users SET totp_secret = ? WHERE id = ?').run(encrypt(decrypt(row.totp_secret), next), row.id);

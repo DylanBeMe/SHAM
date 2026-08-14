@@ -1,37 +1,61 @@
-# SHAM — Simple Hosting And More
+<p align="center">
+  <img src="public/logo.svg" width="96" height="96" alt="SHAM logo">
+</p>
 
-**Current release: 1.0.0** · **License: AGPL-3.0-or-later**
+<h1 align="center">SHAM — Simple Hosting And More</h1>
 
-SHAM is a self-hosted control plane for deploying static websites and managed Node.js servers from one browser dashboard.
+<p align="center"><strong>A self-hosted deployment and operations control plane for static sites, managed processes, OCI containers, Docker Compose applications, and reverse-proxied services.</strong></p>
+<p align="center"><strong>Current release: 1.0.0</strong> · <strong>License: AGPL-3.0-or-later</strong></p>
+
+SHAM keeps deployments, runtime controls, security, delivery, observability, and integrations in one browser dashboard while keeping application data on infrastructure you control.
 
 It supports:
 
 - Static HTML, CSS, JavaScript, and asset hosting.
+- Reverse-proxy sites for HTTP/S services that run elsewhere on the LAN or host.
 - Optional on-the-fly minification for HTML, CSS, JavaScript, and ES modules.
 - Optional compatibility-oriented JavaScript obfuscation with explicit risk acknowledgement, bounded static analysis, preserved public names, and automatic fallback when a transform fails.
-- Managed Node.js applications launched as `node server.js` or another configured entry file.
-- Automatic or manual `npm install --omit=dev`.
+- Backward-compatible Node.js applications plus generic managed-process runtimes for npm/Node, Bun, Deno, FastAPI/Uvicorn, Django/Gunicorn, Go binaries, Java JARs, and custom commands.
+- OCI/container runtimes from prebuilt images, repository Dockerfiles, Cloud Native Buildpacks, or Nixpacks, plus administrator-controlled Docker Compose projects.
+- Configurable install/build commands, immutable candidate builds, static build-output publication for Vite/React/Astro/Hugo, and readiness-first blue/green activation.
+- Reviewed `sham.yaml`, `sham.yml`, or `sham.json` repository manifests with explicit approval when execution policy changes.
+- Automatic or manual `npm install --omit=dev` for legacy Node compatibility; Docker-isolated Node dependencies are installed inside the runtime-compatible image.
 - Per-site ports, bind addresses, custom headers, caching, SPA fallback, and domain-only access.
 - Per-site local firewall controls and optional Cloudflare WAF custom-rule synchronization.
 - File browsing, text-document editing, single-file replacement, and single-file deletion.
-- Persistent request, bandwidth, error, response-time, visitor-IP, and country statistics with an Equal Earth country choropleth map.
+- Persistent request, bandwidth, error, response-time, visitor-IP, user-agent, automated-client, and country statistics with an Equal Earth country choropleth map and one-click site firewall bans.
 - Certbot certificate issuance and renewal.
-- Cloudflare DNS/WAF integration plus an optional supervised Cloudflare Tunnel connector for outbound-only ingress.
+- Cloudflare DNS/WAF integration plus independently configurable, supervised Cloudflare Tunnel connectors per site for outbound-only ingress.
 - Installable JSON and JavaScript plugins with settings and dashboard UI extensions.
-- Multi-user authentication with administrator and user roles, TOTP, recovery codes, and WebAuthn passkeys.
+- Multi-user authentication with administrator and user roles, TOTP, recovery codes, WebAuthn passkeys, and optional OpenID Connect SSO with PKCE.
 - AES-256-GCM encryption for saved integration, plugin, and TOTP secrets, with administrator-triggered key rotation.
 - Signed plugin verification, explicit permissions, action timeouts, bounded pending work, and optional worker isolation.
 - Dependency vulnerability scanning, site snapshots, automatic rollback points, and retention limits.
-- Brotli/Gzip response compression, precompressed static assets, health checks, restart policies, crash-loop protection, memory limits, and connection limits.
+- Brotli/Gzip response compression, precompressed static assets, separate startup/readiness and liveness probes, restart policies, crash-loop protection, graceful drain/shutdown windows, memory/CPU limits, and connection limits.
 - A shared domain-routed edge proxy for ports 80/443, plus security-header and CSP presets.
-- Structured runtime logs, privacy-aware visitor retention, configurable alerts, anomaly detection, and a live performance monitor.
+- Structured line-buffered runtime logs, privacy-aware visitor retention, per-site alert rules, anomaly detection, seven-day CPU/p50/p95 history, and a live performance monitor.
 - Purple-first preset themes plus a local custom-theme editor.
 - Docker deployment with a configurable persistent storage path.
-- Optional per-site Docker isolation, atomic release deployment and rollback, Git/webhook delivery, preview hostnames, encrypted environment variables and database profiles, scheduled jobs, off-host backups, Anubis anti-bot sidecars, observability exports, public status, localization, and signed SHAM updates.
+- Optional per-site Docker isolation, atomic release deployment and rollback, Git/webhook delivery, encrypted GitHub/GitLab/Bitbucket Cloud/Gitea/Forgejo provider connections, deployment history, preview hostnames, encrypted environment variables and database profiles, scheduled jobs, off-host backups, Anubis anti-bot sidecars, observability exports, public status, localization, and signed SHAM updates.
+
+## Documentation
+
+The full manual is split into focused guides:
+
+- [Documentation index](docs/README.md)
+- [Getting started](docs/getting-started.md)
+- [Runtimes and Docker](docs/runtimes-and-docker.md)
+- [Git and CI/CD](docs/git-and-cicd.md)
+- [API and CLI](docs/api-and-cli.md)
+- [Operations and security](docs/operations-and-security.md)
+- [Plugin development](docs/plugin-development.md)
+- [Troubleshooting](docs/troubleshooting.md)
+
+The dashboard also includes categorized documentation and the command palette can search documentation, settings, sites, performance, logs, and common actions.
 
 ## Important trust boundary
 
-SHAM can execute uploaded Node.js applications and enabled JavaScript plugins. Both are trusted server-side code and can access resources available to the SHAM process. Run SHAM as an unprivileged account, isolate it from sensitive host data, review code before enabling it, and use container or operating-system controls appropriate to your threat model.
+SHAM can execute uploaded/repository-managed process commands, build container images, operate approved Compose projects, and run enabled JavaScript plugins. Host-process runtimes and plugins are trusted server-side code and can access resources available to the SHAM process; Docker control is also a powerful host-administration boundary. Run SHAM as an unprivileged account, isolate it from sensitive host data, review code before enabling it, and use container or operating-system controls appropriate to your threat model.
 
 ## Quick start
 
@@ -96,7 +120,7 @@ export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
 docker compose -f docker-compose.yml -f docker-compose.isolation.yml up -d --build
 ```
 
-`SHAM_DOCKER_HOST_DATA_PATH` must be the absolute host path mounted at `SHAM_DATA_PATH` inside SHAM. Isolated Node.js sites run with a read-only application mount, a separate writable data directory, dropped capabilities, `no-new-privileges`, process/memory/CPU limits, and an optional internal-only Docker network. Do not mount the Docker socket into a general-purpose or multi-tenant control plane.
+`SHAM_DOCKER_HOST_DATA_PATH` must be the absolute host path mounted at `SHAM_DATA_PATH` inside SHAM. Managed container runtimes use a separate writable data directory, dropped capabilities, `no-new-privileges`, process/memory/CPU limits, and an optional internal-only Docker network. Legacy Node.js image mode additionally mounts application content read-only when appropriate. Do not mount the Docker socket into a general-purpose or multi-tenant control plane.
 
 ## Safe deployments and operations
 
@@ -104,23 +128,69 @@ The administrator-only **Operations** workspace groups delivery, configuration, 
 
 On first administrator sign-in, SHAM presents a hardening checklist rather than silently assuming production readiness. Site configuration can be exported or imported as JSON without exporting secret values, and runtime logs support reusable saved filters.
 
+### Runtime drivers, presets, and repository manifests
+
+SHAM separates the public site listener from the application backend. A site uses one of five drivers: **static**, **process**, **container**, **compose**, or **proxy**. Existing `static`, `node`, and reverse-proxy records remain compatible; legacy Node.js is implemented through the process/container drivers rather than a separate orchestration path.
+
+Managed-process presets include Node.js, `npm run start`, Bun, Deno, FastAPI/Uvicorn, Django/Gunicorn, Go binaries, Java JARs, and a custom command. SHAM allocates an internal port, injects `HOST`, `PORT`, and the configured port-variable name, waits for the startup/readiness probe, then routes the public listener to that backend. Startup retries allocate a new internal port when a bind race occurs. Process and container output is line-buffered so stream chunk boundaries do not split log records.
+
+Container mode supports a prebuilt OCI image, a repository `Dockerfile`, Cloud Native Buildpacks (`pack`), or Nixpacks. Source-built candidates are built before traffic is switched. Legacy Docker-isolated Node.js projects install production dependencies inside the selected runtime image, avoiding host-glibc/container-musl native-module mismatches. Runtime environment values are passed to Docker without embedding secret plaintext in Docker CLI arguments.
+
+Compose mode validates every service before startup. SHAM rejects privileged mode, custom host/container namespaces, added capabilities, host devices, `volumes_from`, unconfined security profiles, Docker socket access, host bind mounts, host build networking, privileged build entitlements, and published ports on auxiliary services. On a host installation, the selected application service must publish only its expected TCP application port to loopback, preferably with a dynamic mapping such as `127.0.0.1::3000`, so release candidates and previews can coexist. Containerized SHAM connects the selected service to the configured SHAM Docker network instead of relying on the host loopback. When outbound networking is disabled, Compose project networks are forced internal and external networks are rejected. Each candidate uses a unique Compose project name.
+
+Git repositories may include `sham.yaml`, `sham.yml`, or `sham.json`. The manifest can set runtime/build commands, working directory, port variable, readiness policy, shutdown/drain timing, and container/Compose settings. SHAM hashes the execution policy and returns a conflict instead of activating a commit that changes it until an administrator explicitly approves the manifest change. Example:
+
+```yaml
+build:
+  command: npm ci && npm run build
+
+runtime:
+  preset: custom
+  driver: process
+  command: npm run start
+  portEnv: PORT
+
+readiness:
+  type: http
+  path: /health
+  statusMin: 200
+  statusMax: 399
+  timeoutSeconds: 45
+
+shutdown:
+  graceSeconds: 10
+  drainSeconds: 5
+```
+
+Production activation and rollback are readiness-first: SHAM moves each build into a stable retained release path before startup, starts the candidate from that path, waits for readiness, switches the stable gateway, commits the active-release pointer, then drains and stops the previous backend. Running process/container/Compose working directories are never renamed during activation. If activation fails before metadata commit, traffic is switched back to the old backend and the failed candidate is discarded. Previews use the same runtime drivers rather than a separate Node-only launcher. On SHAM restart, stale managed process/container/Compose state is reconciled before enabled sites are started again.
+
 ### Cloudflare Tunnel
 
-Under **Operations → Instance**, administrators can save a remotely managed Cloudflare Tunnel token, enable or disable the connector, inspect its local process state, and restart it. The token is encrypted with SHAM's master key and supplied through the `TUNNEL_TOKEN` environment variable, so it is not exposed in `cloudflared` command-line arguments. SHAM supervises unexpected exits with bounded exponential backoff and stops the connector during graceful shutdown.
+Cloudflare Tunnel is configured **per site**. Open **Sites → Site settings → Cloudflare Tunnel** as an administrator, paste the remotely managed tunnel token for that site, and enable the connector. **Operations → Instance** shows a compact overview of all site connectors and their current local state.
 
-Create the tunnel and public-hostname routes in Cloudflare Zero Trust. Because `cloudflared` runs inside the SHAM container, a route for hosted domains should normally target `http://127.0.0.1:80` with the shared edge listener enabled; a dashboard-only route can target `http://127.0.0.1:8080`. Tunnel process status confirms only the local connector lifecycle. Verify route and replica health in Cloudflare as well.
+Each site token is encrypted with SHAM's master key and supplied to its own `cloudflared tunnel --no-autoupdate run` process through the `TUNNEL_TOKEN` environment variable, so the secret is not exposed in process arguments or returned by the API. Connectors are supervised independently with bounded exponential backoff, can be restarted without disturbing other sites, and are stopped during graceful shutdown or site deletion.
 
-A tunnel does not require inbound port forwarding. When it is the exclusive ingress path, remove unnecessary Docker port publications or bind them only to a private interface, and block direct origin access. Existing published ports remain in the default Compose file for backward compatibility.
+Create the tunnel and public-hostname route in Cloudflare Zero Trust. For domain-routed traffic, the simplest layout is usually to enable SHAM's shared edge proxy and point the Cloudflare route at `http://127.0.0.1:80` inside the container. A tunnel can also target a site's directly reachable listener when that is intentional. Connector status confirms the local `cloudflared` lifecycle; verify hostname routing and replica health in Cloudflare as well.
+
+A tunnel does not require inbound port forwarding. When Cloudflare Tunnel is the exclusive ingress path, remove unnecessary Docker port publications or bind them only to a private interface, and block direct origin access. Existing published ports remain in the default Compose file for backward compatibility.
+
+> **Upgrading from the original instance-wide connector:** existing instance-level tunnel settings and API endpoints are retained for compatibility and continue to start automatically. New configuration should use the per-site controls; migrate the old tunnel intentionally before disabling the legacy connector so remote routes are not interrupted.
 
 ### Atomic releases, Git, webhooks, and previews
 
-Git deployments clone into a new release directory, optionally install production dependencies, validate the entry point, start the candidate, and then switch traffic. Previous releases remain available for one-click rollback. Preview deployments receive a temporary hostname and expire automatically; they are intended for validation rather than permanent hosting.
+Git deployments clone into a new release directory, optionally run a bounded install command and build command, validate the configured entry/output, start the candidate, and then switch traffic. Previous releases remain available for one-click rollback. Each site workspace keeps deployment history with queued/building/running/failed/rolled-back/superseded state, duration, commit SHA, author, message, provider commit links, deployment-scoped logs, a clear active-release marker, redeploy, and rollback actions. Preview deployments receive a temporary hostname and expire automatically; they are intended for validation rather than permanent hosting.
 
-A repository can trigger deployment through `POST /api/hooks/deploy/:id`. Configure `DEPLOY_WEBHOOK_SECRET`, send the raw webhook body, and include either `X-Hub-Signature-256: sha256=<hex HMAC-SHA256>` or `X-SHAM-Signature: sha256=<hex HMAC-SHA256>`. Webhooks are rate-limited, branch-filtered, signature-checked with a timing-safe comparison, and serialized with other site mutations.
+Administrators can connect GitHub, GitLab, Bitbucket Cloud, Gitea, or Forgejo under **Settings → Instance**. Gitea and Forgejo support configurable self-hosted base URLs. Provider access tokens are encrypted at rest, are never returned to the browser, and are used to discover repositories and authenticate private HTTPS clones without embedding credentials in the stored Git URL or command line. Manual HTTPS/SSH repository URLs and deploy keys remain available. Set the externally reachable **Public SHAM URL** in the same panel and SHAM will create or repair the matching provider push webhook after successful Git deployments. The provider token must have the provider's repository/webhook permissions. If the dashboard has no public origin, leave that setting blank and configure the signed webhook manually.
+
+A repository can trigger deployment through `POST /api/hooks/deploy/:id`. GitHub and SHAM-style senders use `X-Hub-Signature-256: sha256=<hex HMAC-SHA256>` or `X-SHAM-Signature: sha256=<hex HMAC-SHA256>` over the raw request body; GitLab uses its `X-Gitlab-Token` secret. Automatic provider setup generates and encrypts `DEPLOY_WEBHOOK_SECRET` for the site. For manual setup, add that variable with Build or Both scope yourself. Webhooks are rate-limited, branch-filtered, timing-safe authenticated, deduplicated by the provider delivery/event UUID, and serialized with other site mutations.
 
 ### Environments and attached services
 
-Per-site environment variables support development, staging, and production scopes. Secret values are encrypted at rest and are never returned to the browser. Reusable database profiles attach an encrypted connection string to a selected environment variable without provisioning or managing the external database itself. Runtime configuration changes require a restart or a new release activation.
+Per-site environment variables support development, staging, and production scopes. Secret values are encrypted at rest and are masked by default. Administrators can reveal one saved secret after current-password confirmation, or replace it directly in the editor. The editor supports `.env` paste/import and server-side copying from another site/environment without revealing encrypted values to the client. Reusable database profiles attach an encrypted connection string to a selected environment variable without provisioning or managing the external database itself. Runtime configuration changes require a restart or a new release activation.
+
+### Reverse-proxy sites
+
+Choose **Reverse proxy** when SHAM should manage a hostname, TLS, access policy, statistics, and observability for a service it does not launch itself. Upstream targets must be valid `http://` or `https://` URLs without embedded credentials; LAN IPs and hostnames are supported. SHAM applies the same request accounting, firewall, security headers, maintenance mode, domain routing, Cloudflare Tunnel, and WebSocket handling used by hosted sites, while enforcing configurable bounded upstream request timeouts. An optional per-site Host header override supports upstreams that require virtual-host routing.
 
 ### Scheduled jobs
 
@@ -128,7 +198,7 @@ Jobs use bounded five-field cron expressions (`minute hour day month weekday`). 
 
 ### External backups
 
-Scheduled and manual backups can target a local path or mounted NAS, restic, S3-compatible storage, or SFTP. Restic provides repository encryption when configured with a strong password. S3 and SFTP transfers package SHAM data but rely on the destination/provider for encryption at rest; use encrypted storage or wrap the destination with restic when application-layer encryption is required. Non-interactive SFTP jobs require a dedicated unencrypted deploy key or a preconfigured SSH agent because SHAM cannot answer a key passphrase prompt. SHAM verifies locally created archives and records each result, but operators should also perform periodic restore drills.
+Scheduled and manual backups can target a local path or mounted NAS, restic, S3-compatible storage, or SFTP. Restic provides repository encryption when configured with a strong password. S3 and SFTP transfers package SHAM data but rely on the destination/provider for encryption at rest; use encrypted storage or wrap the destination with restic when application-layer encryption is required. Non-interactive SFTP jobs require a dedicated unencrypted deploy key or a preconfigured SSH agent because SHAM cannot answer a key passphrase prompt. SHAM verifies locally created archives and records each result. A successful locally cached backup can be staged for a full-instance restore from Operations; SHAM creates a fresh local safety backup first. On restart it validates archive paths, extracts into an isolated sibling staging directory, rejects links/special files and malformed SQLite data, and only then atomically swaps the validated data directory into place. If the swap/preservation step fails, SHAM restores the original directory before startup continues. Keep off-host copies and perform periodic restore drills.
 
 ### Optional Anubis anti-bot protection
 
@@ -143,6 +213,30 @@ Sites can define maintenance HTML, custom 4xx/5xx pages, path redirects, cache r
 ### Logs, alerts, metrics, and status
 
 Runtime logs support bounded search and saved filters. Audit logs can be exported by administrators. Alert destinations support generic webhooks, Slack-compatible webhooks, Discord-compatible webhooks, and local sendmail. Prometheus and OpenTelemetry exports are optional and token/header protected. The public status page is read-only and exposes only coarse availability information. English, Dutch, and German interface locales are available.
+
+Per-site performance samples retain seven days of CPU, RSS, request/error rate, p50/p95/average response latency, connections, and restart counts. Administrators can add per-site CPU, memory-percent, p95-latency, request-rate, error-rate, and traffic-multiplier rules that override the corresponding instance defaults. Health checks are run with bounded concurrency.
+
+### API tokens and CLI automation
+
+Security can create revocable bearer tokens with independent `read`, `logs:read`, `deploy`, and `sites:control` scopes. Only a SHA-256 hash is stored; the `sham_pat_…` value is shown once. Bearer-token requests use scope authorization rather than browser CSRF semantics. The bundled CLI uses `SHAM_URL` and `SHAM_TOKEN`:
+
+```bash
+export SHAM_URL=https://sham.example.com
+export SHAM_TOKEN=sham_pat_...
+sham sites
+sham deploy 12 --branch main --approve-manifest
+sham logs 12 --limit 200
+sham restart 12
+sham rollback 12 37
+```
+
+### OpenID Connect SSO
+
+Administrators can configure an OIDC issuer/client under **Instance → OIDC single sign-on** while keeping local login/MFA available for recovery. SHAM uses Authorization Code + PKCE, state/nonce replay protection, provider discovery, JWKS signature verification for RS/PS/ES algorithms, issuer/audience/authorized-party/time claim validation, encrypted client-secret storage, and optional just-in-time user provisioning with a configured local role. HTTPS endpoints are required except for loopback development, and OIDC redirects are rejected rather than followed.
+
+### Automatic Cloudflare reconciliation
+
+Instance settings can enable a bounded reconciliation interval. Sites with **automatic Cloudflare reconciliation** enabled have their proxied A record and supported firewall/WAF policy repaired from the saved SHAM configuration using the restricted Cloudflare API token and configured origin IPv4 address. Manual synchronization remains available for deliberate one-off changes.
 
 ### Safe SHAM updates
 
@@ -225,6 +319,8 @@ SHAM loads `.env` from the project root. Existing process environment variables 
 | `SHAM_EDGE_HTTPS_PORT` | `0` | Shared HTTPS/SNI edge port; `0` disables it. |
 | `SHAM_CLOUDFLARED_BIN` | `cloudflared` | Cloudflare Tunnel connector executable. The supplied Docker image includes a pinned binary. |
 | `SHAM_DOCKER_BIN` | `docker` | Docker executable used for isolated sites and Anubis sidecars. |
+| `SHAM_PACK_BIN` | `pack` | Cloud Native Buildpacks CLI used by the Buildpack container preset. |
+| `SHAM_NIXPACKS_BIN` | `nixpacks` | Nixpacks CLI used by the Nixpacks container preset. |
 | `SHAM_DOCKER_HOST_DATA_PATH` | unset | Absolute host path corresponding to `SHAM_DATA_PATH` when SHAM itself runs in Docker. |
 | `SHAM_DOCKER_INTERNAL_NETWORK` | `sham-internal` | Docker network used by isolated sites that must not have outbound internet access. The isolation overlay sets a shared internal network name. |
 | `SHAM_DOCKER_EGRESS_NETWORK` | unset | Docker network used by isolated sites with outbound access. The isolation overlay supplies a shared egress network. |
@@ -234,6 +330,7 @@ SHAM loads `.env` from the project root. Existing process environment variables 
 | `SHAM_AWS_BIN` | `aws` | AWS CLI used for S3-compatible transfers. |
 | `SHAM_SFTP_BIN` | `sftp` | SFTP executable used for remote transfers. |
 | `SHAM_ANUBIS_IMAGE` | pinned stable image | Anubis sidecar image. Keep it pinned and review policy changes before upgrading. |
+| `SHAM_HEALTH_CHECK_CONCURRENCY` | `8` | Maximum concurrent per-site liveness checks in one health sweep. |
 | `SHAM_JOB_POLL_SECONDS` | `15` | Scheduler polling interval. |
 | `SHAM_JOB_TIMEOUT_SECONDS` | `900` | Maximum scheduled-job runtime. |
 | `SHAM_BACKUP_TIMEOUT_SECONDS` | `3600` | Maximum backup runtime. |
@@ -352,7 +449,8 @@ SHAM records statistics at the public listener for static and Node.js sites:
 - Total response time and average response time.
 - Last request time.
 - Daily requests, bytes, and errors for the overview chart.
-- Most recently observed visitor IP addresses.
+- Most recently observed visitor IP addresses, exact user agents, and client classification (`browser`, `search`, `crawler`, or `llm`) when full-IP storage is enabled.
+- One-click blocking of actionable visitor IPs through the selected site's existing firewall configuration, with unblock controls in the site Security workspace.
 - Country request and visitor totals, plus an overview traffic map.
 
 Statistics are accumulated in memory and written to SQLite in short batches to avoid a synchronous database write for every request. They survive restarts; the flush interval is configurable. Daily detail is indexed by date and retained for 400 days, while lifetime totals remain available for each site. Visitor detail is bounded to the 5,000 most recently updated IP/country rows per site.
@@ -363,7 +461,7 @@ The traffic map uses simplified Natural Earth country boundaries projected with 
 
 Obfuscation is deliberately conservative. SHAM does not mangle top-level names or properties, preserves function and class names, avoids Terser unsafe transforms, and serves the original file when transformation itself fails. It still cannot prove runtime compatibility for code that uses `eval`, the `Function` constructor, string timers, generated source, function-source inspection, or dynamic global-name lookups. Enabling obfuscation therefore requires an explicit acknowledgement. Existing sites can run a bounded compatibility report before saving, and SHAM warns again when obfuscation is enabled or obfuscated content is replaced. Always test the deployed site. Obfuscation is not encryption or a security boundary.
 
-Country data is available when requests arrive through a trusted Cloudflare edge or reverse proxy that supplies `CF-IPCountry`; direct requests are recorded as country `Unknown`. IP addresses are personal data in many jurisdictions. Operators are responsible for providing suitable notice, access controls, retention choices, and legal basis for collection.
+Country data is available when requests arrive through a trusted Cloudflare edge or reverse proxy that supplies `CF-IPCountry`; direct requests are recorded as country `Unknown`. SHAM recognizes common AI/LLM crawlers (for example OpenAI, Anthropic, Perplexity, Google-Extended, Bytespider, Common Crawl, Cohere, Amazon, and Apple extended crawlers), search crawlers, and generic automation from their user agents. Classification is operational metadata rather than proof of identity and can be spoofed. IP addresses and user agents can be personal data in many jurisdictions. Operators are responsible for providing suitable notice, access controls, retention choices, and legal basis for collection.
 
 ## Security, recovery, and performance
 
@@ -379,8 +477,8 @@ The **Performance** page samples the SHAM process and hosted runtimes without wr
 
 - Dashboard CPU, RSS/heap memory, load, event-loop mean/p99 delay, storage use, and uptime.
 - Upload, transformation, dependency-install, dependency-scan, and snapshot queue pressure.
-- Per-site process memory, health state, connection count, restart count, request rate, response throughput, recent error percentage, and sampled average latency.
-- Configurable CPU, event-loop, disk, traffic-spike, and site-error-rate alerts.
+- Per-site CPU and memory, health state, connection count, restart count, request rate, response throughput, recent error percentage, and sampled average/p50/p95 latency, with seven-day persisted history.
+- Configurable instance alerts plus per-site CPU, memory, p95-latency, request-rate, error-rate, and traffic-multiplier alert rules.
 
 Traffic baselines use an exponentially weighted recent average and require a warm-up period. Alerts are intentionally advisory: a traffic spike can be legitimate, and operators should correlate alerts with Activity/runtime logs before blocking traffic.
 
@@ -431,7 +529,7 @@ Changing a site domain marks its Cloudflare DNS state as unsynchronized. Sync th
 
 A proxied record routes supported traffic through Cloudflare only when the visitor-facing protocol and port are supported. Prefer a reverse proxy on ports 80/443 (or another currently supported Cloudflare proxy port) in front of SHAM sites. A proxied DNS record alone does not protect an origin that remains directly reachable, so restrict origin access to trusted networks or Cloudflare source ranges and expose only required ports. SHAM warns when a site's configured port is outside Cloudflare's standard proxy-port set.
 
-For outbound-only ingress, create a remotely managed tunnel in Cloudflare Zero Trust and paste its connector token under **Operations → Instance → Cloudflare Tunnel**. SHAM uses Cloudflare's `cloudflared tunnel --no-autoupdate run` lifecycle with the token supplied through `TUNNEL_TOKEN`. The DNS/WAF API token under **Instance** is separate from the tunnel connector token and should keep only the permissions needed for DNS, firewall, and Certbot workflows.
+For outbound-only ingress, create a remotely managed tunnel in Cloudflare Zero Trust and paste its connector token under **Sites → Site settings → Cloudflare Tunnel**. Each site gets an independent `cloudflared tunnel --no-autoupdate run` lifecycle with the token supplied through `TUNNEL_TOKEN`. The DNS/WAF API token under **Instance** is separate from site tunnel connector tokens and should keep only the permissions needed for DNS, firewall, and Certbot workflows.
 
 ## Plugin system
 
@@ -656,7 +754,10 @@ Authentication:
 | `POST` | `/api/auth/register` | Bootstrap or open registration. |
 | `POST` | `/api/auth/login` | Start a dashboard session. |
 | `POST` | `/api/auth/logout` | End a dashboard session. |
-| `GET` | `/api/security` | Current MFA/passkey status. |
+| `GET` | `/api/auth/oidc/start` | Start configured OIDC Authorization Code + PKCE login. |
+| `GET` | `/api/auth/oidc/callback` | Complete OIDC login. |
+| `GET` | `/api/security` | Current MFA/passkey/API-token status. |
+| `POST/DELETE` | `/api/security/api-tokens` | Create or revoke scoped API tokens. |
 | `POST` | `/api/security/totp/*` | Configure, enable, disable, or recover TOTP. |
 | `POST` | `/api/security/passkeys/*` | Register and verify passkeys. |
 | `DELETE` | `/api/security/passkeys/:id` | Delete a passkey with password confirmation. |
@@ -666,7 +767,7 @@ Sites and files:
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/api/sites` | List sites and runtime state. |
-| `POST` | `/api/sites` | Upload a static or Node.js site. |
+| `POST` | `/api/sites` | Create an upload, Git, or reverse-proxy site. |
 | `PUT` | `/api/sites/:id` | Update configuration. |
 | `PATCH` | `/api/sites/:id/toggle` | Start or stop. |
 | `POST` | `/api/sites/:id/restart` | Restart. |
@@ -679,7 +780,11 @@ Sites and files:
 | `DELETE` | `/api/sites/:id/files` | Delete one file. |
 | `DELETE` | `/api/sites/:id` | Delete a site and its files. |
 | `GET` | `/api/statistics` | Aggregate and per-site traffic statistics. |
+| `POST/DELETE` | `/api/sites/:id/firewall/ban-ip` | Add or remove an exact IP from a site's firewall block list. |
+| `PATCH` | `/api/sites/:id/pin` | Pin or unpin a site so favorites sort first. |
 | `GET` | `/api/performance` | Authenticated live performance history and alerts. |
+| `GET` | `/api/sites/:id/performance/history` | Read persisted per-site CPU/latency/traffic history. |
+| `GET/PUT` | `/api/sites/:id/alert-rules` | Read or update per-site alert thresholds. |
 | `GET/POST` | `/api/sites/:id/snapshots` | List or create restore points. |
 | `POST` | `/api/sites/:id/snapshots/:snapshotId/restore` | Restore a snapshot with an automatic rollback point. |
 | `GET/POST` | `/api/sites/:id/dependency-scan` | Read or run dependency security scans. |
@@ -689,13 +794,19 @@ Operations:
 | Method | Route | Purpose |
 |---|---|---|
 | `GET` | `/api/sites/:id/operations` | Read release, environment, job, preview, and attachment state. |
+| `GET` | `/api/sites/:id/deployments` | Read deployment history, provider links, active state, and retained rollback linkage. |
+| `GET` | `/api/sites/:id/deployments/:deploymentId/logs` | Read logs attached to one deployment. |
 | `POST` | `/api/sites/:id/deploy/git` | Build and activate an atomic Git release. |
 | `POST` | `/api/hooks/deploy/:id` | HMAC-authenticated repository webhook deployment. |
 | `POST` | `/api/sites/:id/releases/:releaseId/rollback` | Activate a retained release. |
 | `POST/DELETE` | `/api/sites/:id/previews` | Create or remove an expiring preview. |
 | `GET/PUT` | `/api/sites/:id/environment` | Read metadata or save encrypted environment variables. |
+| `POST` | `/api/sites/:id/environment/copy` | Copy environment variables server-side from another site/environment. |
+| `POST` | `/api/sites/:id/environment/:key/reveal` | Reveal one saved secret after administrator password confirmation. |
 | `GET/POST` | `/api/sites/:id/jobs` | Manage scheduled jobs. |
 | `POST` | `/api/admin/backups/run` | Run an external backup immediately. |
+| `POST` | `/api/admin/backups/:id/restore` | Create a safety backup and stage a verified full-instance restore. |
+| `GET` | `/api/admin/backups/restore-status` | Read pending full-instance restore state. |
 | `GET` | `/api/runtime-logs/search` | Search bounded structured logs. |
 | `GET` | `/api/admin/audit/export` | Export the administrator audit log. |
 | `GET` | `/metrics` | Optional token-protected Prometheus metrics. |
@@ -707,6 +818,9 @@ Integrations and plugins:
 | Method | Route | Purpose |
 |---|---|---|
 | `POST` | `/api/admin/sites/:id/cloudflare` | Create or update a proxied DNS record. |
+| `GET` | `/api/admin/git-providers` | Read GitHub/GitLab connection status. |
+| `PUT` | `/api/admin/git-providers/:provider` | Connect, replace, or clear an encrypted provider token. |
+| `GET` | `/api/admin/git-providers/:provider/repositories` | Discover repositories for a connected provider. |
 | `POST` | `/api/admin/sites/:id/certificate` | Issue a certificate and enable SSL. |
 | `POST` | `/api/admin/certificates/renew` | Renew certificates. |
 | `GET` | `/api/plugins` | List installed plugins. |
@@ -737,13 +851,14 @@ Top-level dependency versions are pinned exactly. The Docker build runs `npm aud
 
 ```text
 sham/
-├── public/                  Dashboard and downloadable plugin examples
+├── public/                  Dashboard shell, styles, and downloadable plugin examples
+│   └── js/                  Build-free browser modules by product area
 ├── src/
 │   ├── config.js            Paths and environment configuration
 │   ├── db.js                SQLite schema and migrations
 │   ├── file-utils.js        File browser and editor operations
 │   ├── integrations.js      Cloudflare API and Certbot execution
-│   ├── cloudflare-tunnel.js  Supervised remotely managed tunnel connector
+│   ├── cloudflare-tunnel.js  Supervised per-site and legacy tunnel connectors
 │   ├── secret-store.js      Encrypted secret storage and rotation
 │   ├── mfa.js / webauthn.js TOTP, recovery codes, and passkeys
 │   ├── performance-monitor.js Live telemetry and alerts
@@ -753,9 +868,15 @@ sham/
 │   ├── plugin-signing.js    Signed package verification
 │   ├── plugin-manager.js    Plugin install, lifecycle, settings, and API
 │   ├── minify-worker.js     Off-thread static asset transformations
-│   ├── site-manager.js      Static/Node runtimes, proxying, minification, stats
+│   ├── git-providers.js     Encrypted GitHub/GitLab connections and clone credentials
+│   ├── visitor-intelligence.js Automated-client classification and actionable-IP checks
+│   ├── sites/               Site core, delivery, runtime, proxying, minification, and stats
+│   ├── operations/          Deployments, configuration, jobs, backups, and observability
+│   ├── routes/              Site, operations, and administrator HTTP route families
+│   ├── site-manager.js      Compatibility facade for the modular site runtime
+│   ├── operations-manager.js Compatibility facade for modular operations
 │   ├── upload-utils.js      Safe atomic project installation and worker entry
-│   └── server.js            Dashboard API and entry point
+│   └── server.js            Dashboard composition, auth, middleware, and startup
 ├── examples/
 │   ├── hello-site/
 │   ├── node-server/

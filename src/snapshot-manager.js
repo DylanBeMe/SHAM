@@ -2,7 +2,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { Worker } = require('node:worker_threads');
-const { SNAPSHOTS_DIR, SITES_DIR, UPLOAD_LIMIT_BYTES, SNAPSHOT_RETENTION, SNAPSHOT_WORKERS, SNAPSHOT_QUEUE_LIMIT } = require('./config');
+const { SNAPSHOTS_DIR, UPLOAD_LIMIT_BYTES, SNAPSHOT_RETENTION, SNAPSHOT_WORKERS, SNAPSHOT_QUEUE_LIMIT } = require('./config');
+const { siteRoot } = require('./site-paths');
 const { MAX_FILES } = require('./upload-utils');
 const { realFileInsideAsync } = require('./site-manager');
 
@@ -62,7 +63,7 @@ class SnapshotManager {
   async create(site, label = '') {
     await this.acquire();
     try {
-      const source = path.join(SITES_DIR, site.directory_name);
+      const source = siteRoot(site);
       const directory = path.join(SNAPSHOTS_DIR, String(site.id));
       await fs.promises.mkdir(directory, { recursive: true });
       const token = `${Date.now()}-${crypto.randomUUID()}`;
@@ -95,15 +96,20 @@ class SnapshotManager {
 
   async restore(site, snapshotId) {
     await this.acquire();
-    const root = path.join(SITES_DIR, site.directory_name);
+    const root = siteRoot(site);
     const staging = `${root}.snapshot-${crypto.randomUUID()}`;
     const backup = `${root}.before-restore-${crypto.randomUUID()}`;
     try {
       const row = this.row(site.id, snapshotId);
       await fs.promises.mkdir(staging, { recursive: true });
       await this.worker({ mode: 'extract', source: row.absolute, destination: staging, maxFiles: MAX_FILES, maxBytes: UPLOAD_LIMIT_BYTES });
-      const required = path.join(staging, ...(site.runtime_type === 'node' ? site.node_entry : site.entry_file).split('/'));
-      if (!(await realFileInsideAsync(staging, required))) throw new Error('Snapshot does not contain the configured entry file.');
+      const requiredRelative = site.runtime_type === 'node' && !site.start_command
+        ? site.node_entry
+        : site.runtime_type === 'static' ? site.entry_file : '';
+      if (requiredRelative) {
+        const required = path.join(staging, ...String(requiredRelative).split('/'));
+        if (!(await realFileInsideAsync(staging, required))) throw new Error('Snapshot does not contain the configured entry file.');
+      }
       await fs.promises.rename(root, backup);
       try { await fs.promises.rename(staging, root); }
       catch (error) { await fs.promises.rename(backup, root).catch(() => {}); throw error; }
