@@ -1,6 +1,6 @@
 services:
   sham:
-    image: ${SHAM_IMAGE:-sham:1.0.0}
+    image: ${SHAM_IMAGE:-ghcr.io/dylpickle-studios/sham:latest}
     build:
       context: .
       args:

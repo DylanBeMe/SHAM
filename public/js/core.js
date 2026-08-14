@@ -276,8 +276,10 @@ function requestAction({ title, message, confirmLabel = 'Continue', danger = fal
   inputWrap.hidden = !inputLabel;
   $('#action-input-label').textContent = inputLabel || 'Value';
   const actionInput = $('#action-input');
-  actionInput.type = inputType;
-  actionInput.autocomplete = autocomplete;
+  const passwordInput = inputType === 'password' || ['current-password', 'new-password'].includes(autocomplete) || /password/i.test(inputLabel);
+  actionInput.type = passwordInput ? 'password' : inputType;
+  actionInput.autocomplete = passwordInput && autocomplete === 'off' ? 'current-password' : autocomplete;
+  actionInput.name = passwordInput ? 'password' : 'action-input';
   actionInput.value = inputValue;
   actionInput.placeholder = placeholder;
   showModal($('#action-dialog'));
@@ -391,7 +393,7 @@ function showMfaLogin(result) {
   $('#auth-submit').textContent = 'Verify code';
   $('#auth-switch').hidden = true;
   $('#auth-oidc').hidden = true;
-  $('#auth-passkey').hidden = !state.mfaMethods.includes('passkey') || !window.PublicKeyCredential;
+  $('#auth-passkey').hidden = !state.mfaMethods.includes('passkey') || !window.isSecureContext || !window.PublicKeyCredential;
   requestAnimationFrame(() => $('#auth-mfa-code').focus());
 }
 
@@ -438,7 +440,8 @@ $('#auth-passkey').addEventListener('click', async (event) => {
   setBusy(event.currentTarget, true, 'Waiting…');
   $('#auth-error').textContent = '';
   try {
-    if (!navigator.credentials?.get) throw new Error('Passkeys are not supported in this browser or context.');
+    if (!window.isSecureContext) throw new Error('Passkeys require HTTPS (or localhost). Enable SHAM_SELF_SIGNED_HTTPS for direct LAN access.');
+    if (!navigator.credentials?.get) throw new Error('Passkeys are not supported in this browser.');
     const challenge = await api('/api/auth/login/passkey/options', { method: 'POST', body: { mfaToken: state.mfaToken } });
     const credential = await navigator.credentials.get({ publicKey: publicKeyOptions(challenge.options) });
     const result = await api('/api/auth/login/passkey/verify', { method: 'POST', body: { mfaToken: state.mfaToken, challengeId: challenge.challengeId, credential: serializeCredential(credential) } });
@@ -501,6 +504,7 @@ async function enterDashboard() {
   $('#audit-panel').hidden = state.user.role !== 'admin';
   $$('.admin-only').forEach((element) => { element.hidden = state.user.role !== 'admin'; });
   mergeInstanceAdministration();
+  applyRuntimeCapabilities();
   await Promise.all([loadSites(), loadOverview()]);
   await loadPlugins();
   showSection('overview', { refresh: false });
@@ -520,8 +524,25 @@ function closeSidebar() {
   $('#mobile-menu').setAttribute('aria-expanded', 'false');
 }
 
-$('#help-button').addEventListener('click', () => showSection('documentation'));
 $('#open-performance').addEventListener('click', () => showSection('performance'));
+
+let licenseLoaded = false;
+async function openLicenseDialog() {
+  const dialog = $('#license-dialog');
+  const content = $('#license-content');
+  showModal(dialog);
+  if (licenseLoaded) return;
+  content.textContent = 'Loading license…';
+  try {
+    const response = await fetch('/LICENSE', { headers: { Accept: 'text/plain' } });
+    if (!response.ok) throw new Error(`License request failed (${response.status}).`);
+    content.textContent = await response.text();
+    licenseLoaded = true;
+  } catch (error) {
+    content.textContent = `Could not load the license. ${error.message}`;
+  }
+}
+$('#license-button').addEventListener('click', openLicenseDialog);
 
 function commandItems() {
   const items = [
@@ -642,6 +663,12 @@ function showSection(sectionName, { refresh = true } = {}) {
 }
 
 document.addEventListener('click', (event) => {
+  const licenseButton = event.target.closest('[data-open-license]');
+  if (licenseButton) {
+    event.preventDefault();
+    openLicenseDialog();
+    return;
+  }
   const refreshOverviewButton = event.target.closest('#refresh-overview');
   if (refreshOverviewButton) {
     event.preventDefault();

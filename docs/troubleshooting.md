@@ -62,8 +62,8 @@ If SHAM itself runs in Docker, the base Compose file does not mount the Docker s
 Check:
 
 ```bash
-docker pull IMAGE
-docker image inspect IMAGE
+docker pull ghcr.io/dylpickle-studios/sham:latest
+docker image inspect ghcr.io/dylpickle-studios/sham:latest
 ```
 
 Then verify:

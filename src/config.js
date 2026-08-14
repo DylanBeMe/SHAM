@@ -64,6 +64,15 @@ function integerEnv(name, fallback, min, max) {
   return value;
 }
 
+function booleanEnv(name, fallback = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const normalized = String(raw).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  throw new Error(`${name} must be true/false, yes/no, on/off, or 1/0.`);
+}
+
 function trustProxyEnv() {
   const raw = String(process.env.SHAM_TRUST_PROXY || 'loopback').trim();
   if (raw.toLowerCase() === 'true') return true;
@@ -136,6 +145,8 @@ module.exports = {
   DB_PATH: path.join(DATA_DIR, 'sham.db'),
   DASHBOARD_HOST: process.env.SHAM_HOST || '127.0.0.1',
   DASHBOARD_PORT: integerEnv('SHAM_PORT', 8080, 1, 65535),
+  DASHBOARD_SELF_SIGNED_HTTPS: booleanEnv('SHAM_SELF_SIGNED_HTTPS', false),
+  OPENSSL_BIN: process.env.SHAM_OPENSSL_BIN || 'openssl',
   UPLOAD_LIMIT_BYTES: integerEnv('SHAM_UPLOAD_LIMIT_MB', 100, 1, 2048) * 1024 * 1024,
   UPLOAD_WORKERS: integerEnv('SHAM_UPLOAD_WORKERS', 2, 1, 16),
   UPLOAD_QUEUE_LIMIT: integerEnv('SHAM_UPLOAD_QUEUE_LIMIT', 16, 1, 256),

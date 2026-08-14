@@ -18,13 +18,28 @@ function renderSecurity(data) {
   $('#passkey-list').innerHTML = data.passkeys?.length ? data.passkeys.map((key) => `<div class="event-item actionable" data-passkey-id="${key.id}"><span class="event-icon">⌾</span><div><strong>${escapeHtml(key.name)}</strong><p>${key.lastUsedAt ? `Last used ${escapeHtml(formatDate(key.lastUsedAt))}` : 'Not used yet'} · added ${escapeHtml(formatDate(key.createdAt))}</p></div><button class="button danger" data-delete-passkey type="button">Delete</button></div>`).join('') : '<div class="empty-state compact"><p>No passkeys are registered.</p></div>';
   $('#api-token-list').innerHTML = data.apiTokens?.length ? data.apiTokens.map((token) => `<div class="event-item actionable" data-api-token-id="${token.id}"><span class="event-icon">⌁</span><div><strong>${escapeHtml(token.name)}</strong><p>${escapeHtml((token.scopes || []).join(', '))}${token.expiresAt ? ` · expires ${escapeHtml(formatDate(token.expiresAt))}` : ' · no expiry'}${token.lastUsedAt ? ` · last used ${escapeHtml(formatDate(token.lastUsedAt))}` : ''}</p></div><button class="button danger" data-delete-api-token type="button">Revoke</button></div>`).join('') : '<div class="empty-state compact"><p>No API tokens have been created.</p></div>';
 }
+function passkeyEnrollmentAvailable() {
+  return Boolean(window.isSecureContext && window.PublicKeyCredential && navigator.credentials?.create);
+}
+
+function updatePasskeyAvailability() {
+  const button = $('#add-passkey');
+  const available = passkeyEnrollmentAvailable();
+  button.disabled = !available;
+  button.title = available ? '' : 'Passkeys require a secure HTTPS context and browser WebAuthn support.';
+  $('#passkey-context-notice').hidden = available;
+}
+
 async function loadSecurity() {
   const requestId = ++state.securityRequest;
   const button = $('#refresh-security');
   setBusy(button, true, 'Refreshing…');
   try {
     const data = await api('/api/security');
-    if (requestId === state.securityRequest) renderSecurity(data);
+    if (requestId === state.securityRequest) {
+      renderSecurity(data);
+      updatePasskeyAvailability();
+    }
   } catch (error) {
     if (requestId === state.securityRequest) toast(error.message, 'error');
   } finally {

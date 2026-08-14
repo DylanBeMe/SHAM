@@ -74,13 +74,19 @@ function decodeCborValue(buffer, state, depth) {
   throw new Error('Unsupported CBOR value.');
 }
 
-function decodeCbor(input) {
+function decodeCborPrefix(input) {
   const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input || []);
   if (buffer.length > MAX_WEBAUTHN_BINARY_BYTES) throw new Error('CBOR data exceeds the accepted size limit.');
   const state = { offset: 0, items: 0 };
   const value = decodeCborValue(buffer, state, 0);
-  if (state.offset !== buffer.length) throw new Error('CBOR data contains trailing bytes.');
-  return value;
+  return { value, bytesRead: state.offset };
+}
+
+function decodeCbor(input) {
+  const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input || []);
+  const decoded = decodeCborPrefix(buffer);
+  if (decoded.bytesRead !== buffer.length) throw new Error('CBOR data contains trailing bytes.');
+  return decoded.value;
 }
 
 function sha256(value) { return crypto.createHash('sha256').update(value).digest(); }
@@ -112,7 +118,16 @@ function parseAuthenticatorData(buffer, rpId, requireAttested = false) {
     if (offset + credentialLength > buffer.length) throw new Error('Passkey credential ID is truncated.');
     result.credentialId = buffer.subarray(offset, offset + credentialLength);
     offset += credentialLength;
-    result.cose = decodeCbor(buffer.subarray(offset));
+    const credentialKey = decodeCborPrefix(buffer.subarray(offset));
+    result.cose = credentialKey.value;
+    offset += credentialKey.bytesRead;
+    if (flags & 0x80) {
+      const extensions = decodeCbor(buffer.subarray(offset));
+      if (!(extensions instanceof Map)) throw new Error('Passkey authenticator extensions are invalid.');
+      result.extensions = extensions;
+    } else if (offset !== buffer.length) {
+      throw new Error('Passkey authenticator data contains unexpected trailing bytes.');
+    }
   }
   return result;
 }

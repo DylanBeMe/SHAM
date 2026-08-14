@@ -162,9 +162,9 @@ textarea { resize: vertical; min-height: 90px; }
 .nav-item.active > span:first-child { color: var(--primary); }
 .plugin-nav { display: grid; gap: 0.3rem; }
 .plugin-nav .nav-item { padding-left: 1.25rem; font-size: 0.86rem; }
-.sidebar-footer { margin-top: auto; padding: 0.95rem; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 0.65rem; }
-.license-link { text-decoration: none; flex: 0 0 auto; }
-.user-chip { min-width: 0; flex: 1; display: flex; gap: 0.65rem; align-items: center; }
+.sidebar-footer { margin-top: auto; padding: 0.95rem; border-top: 1px solid var(--line); display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 0.65rem; }
+.sidebar-footer-tools { display: flex; align-items: center; gap: .45rem; }
+.user-chip { min-width: 0; display: flex; gap: 0.65rem; align-items: center; }
 .user-chip > span { flex: 0 0 auto; width: 2.2rem; height: 2.2rem; border-radius: 50%; background: var(--panel-strong); color: var(--primary); display: grid; place-items: center; font-weight: 900; }
 .user-chip div { display: grid; min-width: 0; }
 .user-chip strong, .user-chip small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -305,6 +305,9 @@ td select { min-width: 100px; padding: .5rem; }
 .modal::backdrop { background: var(--overlay-backdrop); backdrop-filter: blur(7px); }
 .modal-card { border: 1px solid var(--line-strong); border-radius: 20px; background: var(--panel-solid); box-shadow: var(--shadow); overflow: auto; max-height: 92dvh; }
 .large-modal { width: 100%; }
+.inline-link { display: inline; padding: 0; border: 0; background: transparent; color: var(--primary); font: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
+.inline-link:hover { color: var(--primary-strong); }
+.license-content { max-height: min(62vh, 720px); overflow: auto; margin: 0; padding: 1rem; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-strong); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font: 500 .78rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .modal-header, .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1.05rem 1.2rem; }
 .modal-header { border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 3; background: color-mix(in srgb, var(--panel-solid) 97%, transparent); }
 .modal-header h2, .modal-header p { margin-bottom: 0; }
@@ -937,9 +940,9 @@ input[type="range"] { padding: .55rem 0; }
 .top-layer-toast-region { position: fixed; right: 1rem; bottom: 1rem; z-index: 2147483647; }
 
 .sidebar-logout {
-  flex: 0 0 auto; display: inline-flex; align-items: center; gap: .35rem; min-height: 2.55rem;
-  padding: .45rem .65rem; border: 0; border-radius: 8px; background: transparent; color: var(--muted);
-  font: inherit; font-size: .8rem; font-weight: 800; cursor: pointer;
+  grid-column: 1 / -1; width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: .5rem; min-height: 3rem;
+  padding: .65rem .85rem; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-strong); color: var(--muted);
+  font: inherit; font-size: .88rem; font-weight: 800; cursor: pointer;
 }
 .sidebar-logout:hover { color: var(--text); background: var(--panel-hover); }
 .sidebar-logout:focus-visible { outline: 3px solid var(--primary-soft); outline-offset: 2px; color: var(--text); }
@@ -1012,7 +1015,5 @@ input[type="range"] { padding: .55rem 0; }
 }
 @media (max-width: 520px) {
   .source-selector, .theme-presets { grid-template-columns: 1fr; }
-  .sidebar-logout-label { display: none; }
-  .sidebar-logout { width: 2.55rem; justify-content: center; padding: 0; }
   .theme-mode-toggle { grid-template-columns: 1fr; }
 }

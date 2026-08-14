@@ -195,6 +195,31 @@ class OperationsManager extends DeploymentOperations {
     return `${lines.join('\n')}\n`;
   }
 
+  capabilities() {
+    const containerizedSham = fs.existsSync('/.dockerenv');
+    const dockerSocketAvailable = fs.existsSync('/var/run/docker.sock');
+    const dockerHostPathConfigured = Boolean(String(process.env.SHAM_DOCKER_HOST_DATA_PATH || '').trim());
+    const dockerBinaryAvailable = commandAvailable(DOCKER_BIN);
+    const docker = dockerBinaryAvailable && (!containerizedSham || (dockerSocketAvailable && dockerHostPathConfigured));
+    return {
+      docker,
+      dockerBinaryAvailable,
+      dockerSocketAvailable,
+      dockerHostPathConfigured,
+      dockerReason: docker ? '' : !dockerBinaryAvailable
+        ? 'Docker executable was not found.'
+        : containerizedSham && !dockerSocketAvailable
+          ? 'The optional Docker socket overlay is not enabled.'
+          : 'SHAM_DOCKER_HOST_DATA_PATH is not configured.',
+      git: commandAvailable(GIT_BIN),
+      buildpacks: docker && commandAvailable(PACK_BIN),
+      nixpacks: docker && commandAvailable(NIXPACKS_BIN),
+      anubis: docker && Boolean(ANUBIS_IMAGE),
+      anubisImage: ANUBIS_IMAGE,
+      containerizedSham
+    };
+  }
+
   operationsPayload(siteId = null) {
     return {
       environment: siteId ? this.listEnvironment(siteId) : [],
@@ -206,30 +231,7 @@ class OperationsManager extends DeploymentOperations {
       backups: this.db.prepare('SELECT id, destination, status, filename, bytes, detail, started_at AS startedAt, finished_at AS finishedAt FROM backup_runs ORDER BY id DESC LIMIT 30').all(),
       backupSettings: this.backupSettings(),
       alertDestinations: this.listAlertDestinations(),
-      capabilities: (() => {
-        const containerizedSham = fs.existsSync('/.dockerenv');
-        const dockerSocketAvailable = fs.existsSync('/var/run/docker.sock');
-        const dockerHostPathConfigured = Boolean(String(process.env.SHAM_DOCKER_HOST_DATA_PATH || '').trim());
-        const dockerBinaryAvailable = commandAvailable(DOCKER_BIN);
-        const docker = dockerBinaryAvailable && (!containerizedSham || (dockerSocketAvailable && dockerHostPathConfigured));
-        return {
-          docker,
-          dockerBinaryAvailable,
-          dockerSocketAvailable,
-          dockerHostPathConfigured,
-          dockerReason: docker ? '' : !dockerBinaryAvailable
-            ? 'Docker executable was not found.'
-            : containerizedSham && !dockerSocketAvailable
-              ? 'The optional Docker socket overlay is not enabled.'
-              : 'SHAM_DOCKER_HOST_DATA_PATH is not configured.',
-          git: commandAvailable(GIT_BIN),
-          buildpacks: commandAvailable(PACK_BIN),
-          nixpacks: commandAvailable(NIXPACKS_BIN),
-          anubis: docker && Boolean(ANUBIS_IMAGE),
-          anubisImage: ANUBIS_IMAGE,
-          containerizedSham
-        };
-      })()
+      capabilities: this.capabilities()
     };
   }
 

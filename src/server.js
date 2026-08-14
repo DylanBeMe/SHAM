@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const net = require('node:net');
+const http = require('node:http');
+const https = require('node:https');
 const express = require('express');
 const multer = require('multer');
 
@@ -14,6 +16,8 @@ const {
   UPLOAD_TMP_DIR,
   DASHBOARD_HOST,
   DASHBOARD_PORT,
+  DASHBOARD_SELF_SIGNED_HTTPS,
+  OPENSSL_BIN,
   UPLOAD_LIMIT_BYTES,
   EDITOR_LIMIT_BYTES,
   HTTP_REQUEST_TIMEOUT_MS,
@@ -66,6 +70,7 @@ const { PluginManager } = require('./plugin-manager');
 const { getSecretSetting, setSecretSetting, rotateMasterKey, encrypt, decrypt } = require('./secret-store');
 const { generateTotpSetup, generateRecoveryCodes, verifyTotp, consumeRecoveryCode, enableTotp, disableTotp, userTotpSecret } = require('./mfa');
 const { registrationOptions, verifyRegistration, assertionOptions, verifyAssertion } = require('./webauthn');
+const { dashboardTlsOptions } = require('./dashboard-tls');
 const { SnapshotManager } = require('./snapshot-manager');
 const { DependencyScanner } = require('./dependency-scanner');
 const { PerformanceMonitor } = require('./performance-monitor');
@@ -603,7 +608,9 @@ app.get('/api/bootstrap', optionalAuth, (req, res) => {
     user: publicUser(req.user ? securityUser(req.user.id) : null),
     locale: getSetting('instance_locale', 'en'),
     setupCompleted: req.user?.role !== 'admin' || getSetting('setup_completed', '0') === '1',
-    oidcEnabled: getSetting('oidc_enabled', '0') === '1' && Boolean(getSetting('oidc_issuer', '')) && Boolean(getSetting('oidc_client_id', ''))
+    oidcEnabled: getSetting('oidc_enabled', '0') === '1' && Boolean(getSetting('oidc_issuer', '')) && Boolean(getSetting('oidc_client_id', '')),
+    capabilities: req.user ? operationsManager.capabilities() : undefined,
+    secureContext: req.secure
   });
 });
 
@@ -982,9 +989,15 @@ const ready = new Promise((resolve, reject) => {
   rejectDashboardReady = reject;
 });
 
-const dashboardServer = app.listen(DASHBOARD_PORT, DASHBOARD_HOST, async () => {
+const dashboardTls = DASHBOARD_SELF_SIGNED_HTTPS
+  ? dashboardTlsOptions({ dataDir: DATA_DIR, bindHost: DASHBOARD_HOST, opensslBin: OPENSSL_BIN })
+  : null;
+const dashboardServer = dashboardTls ? https.createServer({ key: dashboardTls.key, cert: dashboardTls.cert }, app) : http.createServer(app);
+dashboardServer.listen(DASHBOARD_PORT, DASHBOARD_HOST, async () => {
   const dashboardUrlHost = net.isIP(DASHBOARD_HOST) === 6 ? `[${DASHBOARD_HOST}]` : DASHBOARD_HOST;
-  console.log(`SHAM dashboard listening on http://${dashboardUrlHost}:${DASHBOARD_PORT}`);
+  const dashboardProtocol = dashboardTls ? 'https' : 'http';
+  console.log(`SHAM dashboard listening on ${dashboardProtocol}://${dashboardUrlHost}:${DASHBOARD_PORT}`);
+  if (dashboardTls) console.log(`Local self-signed dashboard certificate covers: ${[...dashboardTls.hosts.dns, ...dashboardTls.hosts.ips].join(', ')}`);
   console.log(`SHAM data path: ${DATA_DIR}`);
   try {
     await manager.reconcileRuntimes();

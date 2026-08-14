@@ -61,7 +61,8 @@ Requirements: Docker Engine and Docker Compose v2.
 
 ```bash
 mkdir -p sham-data
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 Open `http://127.0.0.1:8080` (or port `8080` on the server running SHAM). The first account becomes the administrator.
@@ -81,7 +82,11 @@ export DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
 docker compose \
   -f docker-compose.yml \
   -f docker-compose.isolation.yml \
-  up -d --build
+  pull
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.isolation.yml \
+  up -d
 ```
 
 This is **not Docker-in-Docker**: the Docker CLI inside SHAM talks to the host daemon through `/var/run/docker.sock`. That socket grants substantial authority over the host, so enable the overlay only where that trust boundary is acceptable.
@@ -104,7 +109,9 @@ npm ci
 npm start
 ```
 
-This is no longer the recommended first-run path. Host installations must provide any optional executables used by enabled features, such as Docker, Git, Certbot, `pack`, `nixpacks`, Restic, AWS CLI, or SFTP.
+For direct LAN access with a browser secure context (including passkeys), set `SHAM_HOST=0.0.0.0` and `SHAM_SELF_SIGNED_HTTPS=true`. SHAM uses OpenSSL to generate `data/dashboard-tls/cert.pem` and serves the dashboard at `https://<LAN-IP>:8080`. Trust that certificate on each client device before signing in; clicking through an untrusted-certificate warning is not a reliable WebAuthn setup. `SHAM_OPENSSL_BIN` can point to a non-default OpenSSL executable.
+
+This is no longer the recommended first-run path. Host installations must provide any optional executables used by enabled features, such as Docker, Git, Certbot, `pack`, `nixpacks`, Restic, AWS CLI, or SFTP. OpenSSL is also required when `SHAM_SELF_SIGNED_HTTPS=true`.
 
 ## Create a site
 
@@ -160,7 +167,7 @@ Docker Compose is the recommended deployment path shown above and in [Getting st
 
 ```bash
 mkdir -p sham-data
-docker build -t sham .
+docker pull ghcr.io/dylpickle-studios/sham:latest
 
 docker run -d \
   --name sham \
@@ -175,7 +182,7 @@ docker run -d \
   -e SHAM_EDGE_HOST=0.0.0.0 \
   -e SHAM_EDGE_HTTP_PORT=80 \
   -e SHAM_EDGE_HTTPS_PORT=443 \
-  sham
+  ghcr.io/dylpickle-studios/sham:latest
 ```
 
 If `SHAM_JWT_SECRET` is not supplied, SHAM generates signing material beneath the persistent data path. Production operators may instead inject their own long random secret through their deployment/secret-management system.

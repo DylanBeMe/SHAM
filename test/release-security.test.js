@@ -15,7 +15,8 @@ test('release is AGPL-3.0-or-later and exposes the license from the interface', 
   assert.equal(pkg.license, 'AGPL-3.0-or-later');
   assert.match(license, /GNU AFFERO GENERAL PUBLIC LICENSE[\s\S]*Version 3, 19 November 2007/);
   assert.doesNotMatch(license, /^MIT License/m);
-  assert.match(html, /href="\/LICENSE"[\s\S]*AGPL license/);
+  assert.match(html, /id="license-button"[\s\S]*>License<\/button>/);
+  assert.match(html, /id="license-dialog"[\s\S]*AGPL-3\.0-or-later/);
   assert.match(html, /SHAM is licensed under <strong>AGPL-3\.0-or-later<\/strong>/);
   assert.match(server, /app\.get\('\/LICENSE',[\s\S]*ROOT_DIR, 'LICENSE'/);
 });

@@ -45,7 +45,7 @@ For the optional Docker-management mode, the host must also expose a usable Dock
 
 The stock image includes Node.js, Git, the Docker CLI, Certbot, Cloudflared, Restic, AWS CLI, and OpenSSH tooling. **Cloud Native Buildpacks (`pack`) and Nixpacks are not bundled**; if you want those build modes, extend the image or otherwise make the configured executable available inside the SHAM container.
 
-If you run SHAM directly from source instead, you need Node.js 22 or newer, npm, and a platform supported by `better-sqlite3`.
+If you run SHAM directly from source instead, you need Node.js 22 or newer, npm, and a platform supported by `better-sqlite3`. OpenSSL is additionally required if you enable SHAM's local self-signed HTTPS option.
 
 ## 2. Start SHAM with Docker Compose
 
@@ -53,10 +53,11 @@ From the repository root:
 
 ```bash
 mkdir -p sham-data
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
-This uses `docker-compose.yml`, builds the SHAM image, starts the control plane, and persists mutable instance state in `./sham-data`.
+This uses `docker-compose.yml`, pulls `ghcr.io/dylpickle-studios/sham:latest`, starts the control plane, and persists mutable instance state in `./sham-data`.
 
 Check that it started:
 
@@ -116,7 +117,11 @@ Then start SHAM with both Compose files:
 docker compose \
   -f docker-compose.yml \
   -f docker-compose.isolation.yml \
-  up -d --build
+  pull
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.isolation.yml \
+  up -d
 ```
 
 The resulting layout is:
@@ -262,10 +267,11 @@ A candidate that fails before traffic switching does not replace the existing ba
 
 ## 10. Useful Docker commands
 
-Start or rebuild SHAM:
+Update and start SHAM:
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 View status:
@@ -306,7 +312,16 @@ npm start
 
 The default source configuration listens on `127.0.0.1:8080` and stores mutable state under `./data` unless you change the environment.
 
-When running directly on the host, optional features depend on the corresponding host executables being installed: Docker, Git, Certbot, `pack`, `nixpacks`, Restic, AWS CLI, SFTP, and so on.
+To open a direct host install from another device on your LAN while retaining a secure browser context, set these values in `.env`:
+
+```dotenv
+SHAM_HOST=0.0.0.0
+SHAM_SELF_SIGNED_HTTPS=true
+```
+
+SHAM generates `data/dashboard-tls/key.pem` and `data/dashboard-tls/cert.pem`, including the host's detected LAN addresses in the certificate SANs, then serves `https://<LAN-IP>:8080`. Import/trust `cert.pem` on each client device before using the dashboard. This is especially important for WebAuthn/passkeys, which require a secure context outside localhost. Set `SHAM_OPENSSL_BIN` if `openssl` is not on the normal executable path.
+
+When running directly on the host, optional features depend on the corresponding host executables being installed: Docker, Git, Certbot, `pack`, `nixpacks`, Restic, AWS CLI, SFTP, and so on. OpenSSL is required when the self-signed HTTPS option is enabled.
 
 Before distributing source, run:
 

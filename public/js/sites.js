@@ -147,6 +147,30 @@ function updateProbeFields() {
   $('#site-health-command').required = healthType === 'command';
 }
 
+
+function hasRuntimeCapability(name) {
+  return Boolean(state.bootstrap?.capabilities?.[name]);
+}
+
+function applyRuntimeCapabilities() {
+  $$('[data-requires-capability]').forEach((element) => {
+    const supported = hasRuntimeCapability(element.dataset.requiresCapability);
+    const roleAllowed = !element.classList.contains('admin-only') || state.user?.role === 'admin';
+    const available = supported && roleAllowed;
+    element.hidden = !available;
+    if ('disabled' in element) element.disabled = !available;
+  });
+  const dockerAvailable = hasRuntimeCapability('docker');
+  $('#isolation-options').hidden = !dockerAvailable;
+  if (!hasRuntimeCapability('anubis')) {
+    $('#site-anubis-enabled').checked = false;
+    for (const id of ['site-anubis-enabled', 'site-anubis-preset', 'site-anubis-difficulty', 'site-anubis-policy']) {
+      const input = $(`#${id}`);
+      if (input) input.disabled = true;
+    }
+  }
+}
+
 function updateRuntimeFields() {
   const runtime = $('#site-runtime').value;
   const node = runtime === 'node';
@@ -372,7 +396,9 @@ function setWizardStep(step) {
 }
 
 function setSiteSource(source) {
-  const normalized = ['upload', 'git', 'image', 'proxy'].includes(source) ? source : 'upload';
+  let normalized = ['upload', 'git', 'image', 'proxy'].includes(source) ? source : 'upload';
+  if (normalized === 'git' && (!hasRuntimeCapability('git') || state.user?.role !== 'admin')) normalized = 'upload';
+  if (normalized === 'image' && !hasRuntimeCapability('docker')) normalized = 'upload';
   $('#site-source').value = normalized;
   $$('[data-site-source]').forEach((button) => { const active = button.dataset.siteSource === normalized; button.classList.toggle('active', active); button.setAttribute('aria-checked', String(active)); });
   $('#drop-zone').hidden = normalized !== 'upload';
@@ -407,8 +433,9 @@ function applySiteTemplate(template) {
   };
   const preset = presets[template];
   if (!preset) return;
-  if (preset.source === 'git' && state.user?.role !== 'admin') preset.source = 'upload';
-  setSiteSource(preset.source);
+  if (['dockerimage', 'dockerfile', 'compose'].includes(template) && !hasRuntimeCapability('docker')) return;
+  const source = preset.source === 'git' && (!hasRuntimeCapability('git') || state.user?.role !== 'admin') ? 'upload' : preset.source;
+  setSiteSource(source);
   $('#site-runtime').value = preset.runtime;
   if (preset.entry) $('#site-entry').value = preset.entry;
   if (preset.nodeEntry) $('#site-node-entry').value = preset.nodeEntry;
@@ -422,7 +449,7 @@ function applySiteTemplate(template) {
   $('#site-install-command').value = preset.install;
   $('#site-build-command').value = preset.build;
   $('#site-build-output').value = preset.output;
-  $('#site-release-mode').checked = preset.source === 'git';
+  $('#site-release-mode').checked = source === 'git';
   updateRuntimeFields();
 }
 
@@ -463,6 +490,7 @@ $('#site-git-url').addEventListener('input', () => { if ($('#site-form').classLi
 $('#site-git-branch').addEventListener('input', () => { if ($('#site-form').classList.contains('wizard-mode')) $('#site-create-git-branch').value = $('#site-git-branch').value; });
 
 function openNewSite() {
+  applyRuntimeCapabilities();
   $('#site-form').reset();
   $('#site-id').value = '';
   $('#site-dialog-kicker').textContent = 'New deployment';
@@ -599,7 +627,9 @@ function updateIsolationFields() {
     input.disabled = !managedContainer;
     input.closest('label').hidden = !managedContainer;
   }
-  const anubis = $('#site-anubis-enabled').checked;
+  const anubisAvailable = hasRuntimeCapability('anubis');
+  const anubis = anubisAvailable && $('#site-anubis-enabled').checked;
+  $('#site-anubis-enabled').disabled = !anubisAvailable;
   $('#site-anubis-preset').disabled = !anubis;
   $('#site-anubis-difficulty').disabled = !anubis;
   $('#site-anubis-policy').disabled = !anubis || $('#site-anubis-preset').value !== 'custom';
