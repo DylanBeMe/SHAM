@@ -274,6 +274,11 @@ function renderOperationsInstance(payload) {
   $('#otel-headers-status').textContent = settings.otelHeadersConfigured ? 'Encrypted headers are currently saved. Add rows only to replace them.' : 'No OpenTelemetry headers are saved.';
   $('#public-status-enabled').checked = Boolean(settings.publicStatusEnabled);
   $('#public-status-title').value = settings.publicStatusTitle || 'SHAM service status';
+  const statusLink = $('#open-public-status');
+  statusLink.classList.toggle('is-disabled', !settings.publicStatusEnabled);
+  statusLink.setAttribute('aria-disabled', settings.publicStatusEnabled ? 'false' : 'true');
+  statusLink.tabIndex = settings.publicStatusEnabled ? 0 : -1;
+  $('#copy-metrics-url').disabled = !settings.prometheusEnabled;
   $('#instance-locale').value = settings.locale || 'en';
   $('#update-channel').value = settings.updateChannel || 'stable';
 

@@ -337,7 +337,7 @@ npm run release:check
 - Configure environment variables and secrets.
 - Configure backups and test a restore.
 - Enable OIDC, passkeys, or TOTP according to your identity model.
-- Configure Cloudflare, Certbot, or Tunnels if needed.
+- Configure Cloudflare/Certbot if needed, or follow [Cloudflare Tunnels](cloudflare-tunnels.md) for outbound-only per-site ingress.
 - Create a scoped API token for CI/CD.
 
 ## Updating SHAM

@@ -281,7 +281,10 @@ class CoreSiteManager {
     const bounded = Math.min(Math.max(Number(limit) || 100, 1), 500);
     try {
       return this.db.prepare(`SELECT site_id AS siteId, level, message, context_json AS contextJson, created_at AS timestamp FROM runtime_logs ORDER BY id DESC LIMIT ?`).all(bounded)
-        .map((row) => ({ ...row, context: row.contextJson ? (() => { try { return JSON.parse(row.contextJson); } catch { return null; } })() : null }));
+        .map((row) => ({
+          siteId: row.siteId, level: row.level, message: row.message, timestamp: row.timestamp,
+          context: row.contextJson ? (() => { try { return JSON.parse(row.contextJson); } catch { return null; } })() : null
+        }));
     } catch { return this.events.slice(0, bounded); }
   }
 

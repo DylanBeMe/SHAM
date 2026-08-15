@@ -104,6 +104,8 @@ Cloudflare credentials are encrypted. Scope API tokens to the smallest required 
 
 Do not assume a proxied Cloudflare DNS record makes a publicly reachable origin private. Protect the origin listener/network separately.
 
+For the complete per-site Tunnel workflow—including the difference between Tunnel tokens and API tokens, Docker origin targets, connector states, and 502 troubleshooting—see [Cloudflare Tunnels](cloudflare-tunnels.md).
+
 ## Certbot
 
 SHAM can coordinate certificate issuance/renewal through the configured Certbot executable, including Cloudflare DNS workflows where configured.
