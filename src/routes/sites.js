@@ -1,7 +1,7 @@
 'use strict';
 
 const { siteRoot, legacySiteRoot } = require('../site-paths');
-const { RELEASES_DIR } = require('../config');
+const { RELEASES_DIR, UPLOAD_LIMIT_BYTES } = require('../config');
 
 function registerSiteRoutes(ctx) {
   const {

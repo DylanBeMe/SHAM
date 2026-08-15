@@ -42,11 +42,13 @@ test('every operational API route is authenticated and every admin API is admini
 
 test('public status and deployment webhooks expose only intentionally public information', () => {
   const server = read('src/server.js');
+  const publicStatus = server.slice(server.indexOf('function publicStatusSnapshot'), server.indexOf("app.get('/metrics'"));
   const publicApi = server.slice(server.indexOf("app.get('/api/public/status'"), server.indexOf("app.get('/status'"));
   const publicPage = server.slice(server.indexOf("app.get('/status'"), server.indexOf("app.get('/metrics'"));
-  assert.match(publicApi, /SELECT id, name FROM sites/);
-  assert.doesNotMatch(publicApi, /domain/);
-  assert.doesNotMatch(publicPage, /site\.domain|SELECT[^\n]*domain/);
+  assert.match(publicStatus, /SELECT id, name FROM sites/);
+  assert.match(publicApi, /publicStatusSnapshot\(\)/);
+  assert.match(publicPage, /publicStatusSnapshot\(\)/);
+  assert.doesNotMatch(publicStatus, /site\.domain|SELECT[^\n]*domain/);
   const webhook = server.slice(server.indexOf('function authenticateDeployWebhook'), server.indexOf("app.get('/api/sites/:id/operations'"));
   assert.match(webhook, /DEPLOY_WEBHOOK_DUMMY_SECRET/);
   assert.match(webhook, /Webhook authentication failed/);

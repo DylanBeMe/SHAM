@@ -145,7 +145,8 @@ class OperationsManager extends DeploymentOperations {
     try {
       const parsed = new URL(endpoint);
       if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error('OpenTelemetry endpoint is unsafe.');
-      if (!parsed.pathname.endsWith('/v1/metrics')) parsed.pathname = `${parsed.pathname.replace(/\/$/, '')}/v1/metrics`;
+      const normalizedPath = parsed.pathname.replace(/\/+$/, '');
+      parsed.pathname = normalizedPath.endsWith('/v1/metrics') ? normalizedPath : `${normalizedPath}/v1/metrics`;
       target = parsed.toString();
     } catch (error) { throw new Error(`OpenTelemetry endpoint is invalid: ${error.message}`); }
     const response = await fetch(target, {

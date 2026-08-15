@@ -618,37 +618,50 @@ app.get('/api/bootstrap', optionalAuth, (req, res) => {
   });
 });
 
-app.get('/api/public/status', (_req, res) => {
-  if (getSetting('public_status_enabled', '0') !== '1') return res.status(404).json({ error: 'Public status page is disabled.' });
+function publicStatusSnapshot() {
+  const allowedStatuses = new Set(['healthy', 'online', 'degraded', 'starting', 'offline']);
   const sites = db.prepare("SELECT id, name FROM sites WHERE enabled = 1 ORDER BY name COLLATE NOCASE").all().map((site) => {
     const runtime = manager.statusFor(site.id, site);
-    return { name: site.name, status: runtime.running && runtime.health?.status !== 'unhealthy' ? runtime.health?.status || 'online' : 'offline' };
+    const candidate = runtime.running && runtime.health?.status !== 'unhealthy' ? runtime.health?.status || 'online' : 'offline';
+    return { name: site.name, status: allowedStatuses.has(candidate) ? candidate : 'offline' };
   });
-  res.json({ title: getSetting('public_status_title', 'SHAM service status'), generatedAt: new Date().toISOString(), sites });
+  const available = sites.filter((site) => ['healthy', 'online'].includes(site.status)).length;
+  const offline = sites.filter((site) => site.status === 'offline').length;
+  const overall = !sites.length ? 'empty' : available === sites.length ? 'operational' : offline === sites.length ? 'outage' : 'degraded';
+  return {
+    title: getSetting('public_status_title', 'SHAM service status'),
+    generatedAt: new Date().toISOString(),
+    overall,
+    summary: { services: sites.length, available, offline },
+    sites
+  };
+}
+
+app.get('/api/public/status', (_req, res) => {
+  if (getSetting('public_status_enabled', '0') !== '1') return res.status(404).json({ error: 'Public status page is disabled.' });
+  res.json(publicStatusSnapshot());
 });
 
 app.get('/status', (_req, res) => {
   if (getSetting('public_status_enabled', '0') !== '1') return res.status(404).type('text/plain').send('Status page is disabled.');
-  const title = getSetting('public_status_title', 'SHAM service status');
+  const snapshot = publicStatusSnapshot();
   const escapeStatusHtml = (value) => String(value).replace(/[&<>"']/g, (character) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[character]));
-  const safeTitle = escapeStatusHtml(title);
-  const generatedDate = new Date();
-  const generatedAt = generatedDate.toISOString();
+  const safeTitle = escapeStatusHtml(snapshot.title);
+  const generatedDate = new Date(snapshot.generatedAt);
   const generatedLabel = new Intl.DateTimeFormat('en', {
     year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
     timeZone: 'UTC', timeZoneName: 'short'
   }).format(generatedDate);
   const statusLabels = { healthy: 'Healthy', online: 'Online', degraded: 'Degraded', starting: 'Starting', offline: 'Offline' };
-  const sites = db.prepare("SELECT id, name FROM sites WHERE enabled = 1 ORDER BY name COLLATE NOCASE").all().map((site) => {
-    const runtime = manager.statusFor(site.id, site);
-    const runtimeStatus = runtime.running && runtime.health?.status !== 'unhealthy' ? runtime.health?.status || 'online' : 'offline';
-    const status = Object.hasOwn(statusLabels, runtimeStatus) ? runtimeStatus : 'offline';
-    return `<article class="status-card"><span class="status-indicator ${status}" aria-hidden="true"></span><div><strong>${escapeStatusHtml(site.name)}</strong><small>${statusLabels[status]}</small></div></article>`;
-  }).join('');
+  const overallLabels = { operational: 'All systems operational', degraded: 'Some services need attention', outage: 'Services unavailable', empty: 'No public services' };
+  const serviceSummary = snapshot.summary.services
+    ? `${snapshot.summary.available} of ${snapshot.summary.services} service${snapshot.summary.services === 1 ? '' : 's'} available`
+    : 'No enabled services are currently published';
+  const sites = snapshot.sites.map((site) => `<article class="status-card"><span class="status-indicator ${site.status}" aria-hidden="true"></span><div><strong>${escapeStatusHtml(site.name)}</strong><small>${statusLabels[site.status]}</small></div></article>`).join('');
   res.setHeader('Cache-Control', 'no-store');
-  res.type('html').send(`<!doctype html><html lang="en" class="status-document"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#0c0717"><title>${safeTitle}</title><script src="/theme-init.js"></script><link rel="stylesheet" href="/styles.css"></head><body class="status-page"><main class="status-shell"><header class="status-header"><p class="eyebrow">SHAM public status</p><h1>${safeTitle}</h1><p class="muted">Updated <time datetime="${generatedAt}">${generatedLabel}</time></p></header><section class="status-list" aria-label="Service status">${sites || '<article class="status-card empty"><div><strong>No public services</strong><small>No enabled sites are currently listed.</small></div></article>'}</section></main></body></html>`);
+  res.type('html').send(`<!doctype html><html lang="en" class="status-document"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#0c0717"><meta http-equiv="refresh" content="30"><title>${safeTitle}</title><script src="/theme-init.js"></script><link rel="stylesheet" href="/styles.css"></head><body class="status-page"><main class="status-shell"><header class="status-header"><p class="eyebrow">SHAM public status</p><h1>${safeTitle}</h1><p class="muted">Updated <time datetime="${snapshot.generatedAt}">${generatedLabel}</time> · refreshes every 30 seconds</p></header><section class="status-overview" aria-label="Overall service status"><div><strong>${overallLabels[snapshot.overall]}</strong><small>${serviceSummary}</small></div><span class="status-overview-badge ${snapshot.overall}">${snapshot.overall === 'operational' ? 'Operational' : snapshot.overall === 'outage' ? 'Outage' : snapshot.overall === 'empty' ? 'No services' : 'Degraded'}</span></section><section class="status-list" aria-label="Service status">${sites || '<article class="status-card empty"><div><strong>No public services</strong><small>No enabled sites are currently listed.</small></div></article>'}</section></main></body></html>`);
 });
 
 app.get('/metrics', (req, res) => {

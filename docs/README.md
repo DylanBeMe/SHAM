@@ -14,6 +14,7 @@ This manual documents the current SHAM 1.1.1 feature set. The root [README](../R
 
 - [Dashboard and UI](dashboard-and-ui.md) — navigation, quick-view drilldowns, site workspaces, Performance, command palette, Settings organization, themes, modals, tooltips, and notifications.
 - [Operations and security](operations-and-security.md) — environment variables, database profiles, jobs, backups/restore, monitoring, Cloudflare, Certbot, OIDC, local authentication, API tokens, and trust boundaries.
+- [Cloudflare Tunnels](cloudflare-tunnels.md) — per-site `cloudflared` connectors, Zero Trust public-hostname routing, Docker/service targets, security, and troubleshooting.
 - [Troubleshooting](troubleshooting.md) — common upload, runtime, Docker, Compose, Git, restore, UI, CLI, and release failures.
 
 ### Automate or integrate SHAM
@@ -44,7 +45,8 @@ This manual documents the current SHAM 1.1.1 feature set. The root [README](../R
 | Performance metrics/alerts | [Dashboard and UI](dashboard-and-ui.md) and [Operations and security](operations-and-security.md) |
 | Environment variables/secrets | [Operations and security](operations-and-security.md) |
 | Backup restore | [Operations and security](operations-and-security.md) |
-| Cloudflare/Certbot/OIDC | [Operations and security](operations-and-security.md) |
+| Cloudflare Tunnel | [Cloudflare Tunnels](cloudflare-tunnels.md) |
+| Cloudflare DNS/WAF, Certbot, OIDC | [Operations and security](operations-and-security.md) |
 | Theme customization | [Dashboard and UI](dashboard-and-ui.md) |
 | Plugin playground | [Plugin development](plugin-development.md) |
 | Environment configuration | [Configuration reference](configuration-reference.md) |

@@ -43,6 +43,7 @@ The root README is intentionally an overview. The detailed manual is split by ta
 - **[API and CLI](docs/api-and-cli.md)** — tokens, CLI usage, CI examples, error handling, and compatibility guidance.
 - **[API reference](docs/api-reference.md)** — endpoint inventory grouped by authentication and feature area.
 - **[Operations and security](docs/operations-and-security.md)** — environment values, backups/restore, monitoring, Cloudflare, Certbot, OIDC, recovery, and trust boundaries.
+- **[Cloudflare Tunnels](docs/cloudflare-tunnels.md)** — per-site connector setup, public-hostname routing, Docker origin targets, connector states, and troubleshooting.
 - **[Configuration reference](docs/configuration-reference.md)** — `.env` options and external executable/network requirements.
 - **[Plugin development](docs/plugin-development.md)** — manifests, permissions, browser/server extensions, signing, and the plugin playground.
 - **[Troubleshooting](docs/troubleshooting.md)** — uploads, runtimes, Docker/Compose, Git/webhooks, CI secret checks, UI layering, and restore failures.
