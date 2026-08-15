@@ -109,6 +109,8 @@ npm ci
 npm start
 ```
 
+When a reverse proxy publishes SHAM at a different browser-facing host or scheme, set `SHAM_PUBLIC_ORIGIN` to that exact origin (for example `https://sham.example.com`). SHAM uses it for WebAuthn, OIDC callbacks, secure-cookie decisions, and CSRF origin validation.
+
 For direct LAN access with a browser secure context (including passkeys), set `SHAM_HOST=0.0.0.0` and `SHAM_SELF_SIGNED_HTTPS=true`. SHAM uses OpenSSL to generate `data/dashboard-tls/cert.pem` and serves the dashboard at `https://<LAN-IP>:8080`. Trust that certificate on each client device before signing in; clicking through an untrusted-certificate warning is not a reliable WebAuthn setup. `SHAM_OPENSSL_BIN` can point to a non-default OpenSSL executable.
 
 This is no longer the recommended first-run path. Host installations must provide any optional executables used by enabled features, such as Docker, Git, Certbot, `pack`, `nixpacks`, Restic, AWS CLI, or SFTP. OpenSSL is also required when `SHAM_SELF_SIGNED_HTTPS=true`.
@@ -235,9 +237,9 @@ The main navigation includes:
 - **Performance** — live host/site metrics, history, and alert rules.
 - **Security** — TOTP, recovery codes, passkeys, and API tokens.
 - **Extensions** — installed plugins and the administrator plugin playground.
-- **Settings** — Delivery, Configuration, Automation, Instance, and Administration categories.
+- **Settings** — personal Appearance for every user, plus administrator-only Delivery, Configuration, Automation, Instance, and Administration categories.
 
-**Administration** contains accounts/users, OIDC, Cloudflare, Certbot, registration, and persistent instance policy. Appearance is independent of the color palette: choose **System / Light / Dark**, then choose Purple, Midnight, Emerald, or a Custom palette.
+**Administration** contains account creation/session controls, OIDC, Cloudflare, Certbot, and persistent instance policy. Public signup is available only for the first bootstrap administrator; later accounts are created by an administrator. Appearance is independent of the color palette: choose **System / Light / Dark**, then choose Purple, Midnight, Emerald, or a Custom palette.
 
 ## API and CLI
 

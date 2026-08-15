@@ -5,8 +5,8 @@ const { validateManifest } = require('../plugin-manager');
 function registerAdminRoutes(ctx) {
   const {
     app, requireAuth, requireAdmin, pluginManager, publicUser, multipart, pluginUpload, validatePluginArchiveFile,
-    bool, cleanupUploadedFiles, serializePluginMutation, integrationSettings, securitySettings, oidcSettings, normalizeOidcIssuer, getSetting, setSetting,
-    setSecretSetting, getSecretSetting, rotateMasterKey, verifyPassword, stepUpLimiter, writeCloudflareCredentials, recordAudit,
+    bool, cleanupUploadedFiles, serializePluginMutation, integrationSettings, securitySettings, oidcSettings, normalizeOidcIssuer, normalizeUsername, getSetting, setSetting,
+    setSecretSetting, getSecretSetting, rotateMasterKey, verifyPassword, hashPassword, rotateSessionVersion, stepUpLimiter, writeCloudflareCredentials, recordAudit,
     manager, siteRows, getSiteOr404, syncCloudflareRecord, cloudflarePortWarning, syncCloudflareFirewall,
     acquireCertificateOperation, releaseCertificateOperation, stopRunningSitesOnPort, renewalNeedsPort80, issueCertificate,
     hasCertificate, restoreEnabledSites, renewCertificates, db, activeAdminCount, registrationEnabled, integerSetting,
@@ -170,11 +170,8 @@ app.get('/api/plugins', requireAuth, (req, res) => res.json({
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
-  app.patch('/api/admin/settings/registration', requireAuth, requireAdmin, (req, res) => {
-    const enabled = bool(req.body.enabled, false);
-    setSetting('registration_enabled', enabled ? '1' : '0');
-    recordAudit(req.user.id, 'settings.registration', { enabled });
-    res.json({ registrationEnabled: enabled });
+  app.patch('/api/admin/settings/registration', requireAuth, requireAdmin, (_req, res) => {
+    res.status(410).json({ error: 'Public registration cannot be enabled. Create dashboard users from Administration instead.' });
   });
 
   app.put('/api/admin/settings/integrations', requireAuth, requireAdmin, (req, res) => {
@@ -374,13 +371,30 @@ app.get('/api/plugins', requireAuth, (req, res) => res.json({
   });
 
   app.get('/api/admin/users', requireAuth, requireAdmin, (_req, res) => {
-    const users = db.prepare('SELECT id, username, role, active, created_at FROM users ORDER BY created_at, id').all();
+    const users = db.prepare('SELECT * FROM users ORDER BY created_at, id').all();
     res.json({ users: users.map(publicUser) });
+  });
+
+  app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const username = normalizeUsername(req.body.username);
+      const role = String(req.body.role || 'user');
+      if (!['admin', 'user'].includes(role)) return res.status(400).json({ error: 'Role must be admin or user.' });
+      const { salt, hash } = await hashPassword(req.body.password);
+      const result = db.prepare('INSERT INTO users (username, password_hash, password_salt, role, active, password_configured) VALUES (?, ?, ?, ?, 1, 1)')
+        .run(username, hash, salt, role);
+      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(Number(result.lastInsertRowid));
+      recordAudit(req.user.id, 'user.create', { targetId: user.id, username, role });
+      res.status(201).json({ user: publicUser(user) });
+    } catch (error) {
+      const duplicate = String(error.code || '').includes('SQLITE_CONSTRAINT_UNIQUE');
+      res.status(duplicate ? 409 : 400).json({ error: duplicate ? 'That username is already in use.' : error.message });
+    }
   });
 
   app.patch('/api/admin/users/:id', requireAuth, requireAdmin, (req, res) => {
     const targetId = Number(req.params.id);
-    const target = db.prepare('SELECT id, username, role, active, created_at FROM users WHERE id = ?').get(targetId);
+    const target = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
     if (!target) return res.status(404).json({ error: 'User not found.' });
     if (targetId === req.user.id && req.body.active !== undefined && !bool(req.body.active, true)) {
       return res.status(400).json({ error: 'You cannot disable your own account.' });
@@ -392,10 +406,21 @@ app.get('/api/plugins', requireAuth, (req, res) => res.json({
     if (target.role === 'admin' && target.active && (role !== 'admin' || !active) && activeAdminCount() <= 1) {
       return res.status(400).json({ error: 'SHAM must keep at least one active administrator.' });
     }
-    db.prepare('UPDATE users SET role = ?, active = ? WHERE id = ?').run(role, Number(active), targetId);
-    recordAudit(req.user.id, 'user.update', { targetId, role, active });
-    const updated = db.prepare('SELECT id, username, role, active, created_at FROM users WHERE id = ?').get(targetId);
+    const accessChanged = role !== target.role || Number(active) !== Number(target.active);
+    db.prepare('UPDATE users SET role = ?, active = ?, session_version = session_version + ? WHERE id = ?').run(role, Number(active), accessChanged ? 1 : 0, targetId);
+    recordAudit(req.user.id, 'user.update', { targetId, role, active, sessionsRevoked: accessChanged });
+    const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(targetId);
     res.json({ user: publicUser(updated) });
+  });
+
+  app.post('/api/admin/users/:id/revoke-sessions', requireAuth, requireAdmin, (req, res) => {
+    const targetId = Number(req.params.id);
+    const target = db.prepare('SELECT id, username FROM users WHERE id = ?').get(targetId);
+    if (!target) return res.status(404).json({ error: 'User not found.' });
+    if (targetId === req.user.id) return res.status(400).json({ error: 'Use Security → Sign out other sessions for your own account.' });
+    rotateSessionVersion(targetId);
+    recordAudit(req.user.id, 'user.sessions.revoke', { targetId, username: target.username });
+    res.status(204).end();
   });
 
   app.delete('/api/admin/users/:id', requireAuth, requireAdmin, (req, res) => {

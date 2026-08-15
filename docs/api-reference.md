@@ -23,7 +23,7 @@ API-token scopes are enforced by the authentication middleware on supported auto
 | GET | `/api/public/status` | Public | Public status data for sites configured for status exposure. |
 | GET | `/api/auth/oidc/start` | Public | Start configured OIDC Authorization Code + PKCE login. |
 | GET | `/api/auth/oidc/callback` | Public | OIDC callback. |
-| POST | `/api/auth/register` | Public, policy-limited | Register when registration/bootstrap policy permits it. |
+| POST | `/api/auth/register` | Public, first-run only | Create the initial administrator when no users exist. Public signup is disabled afterward. |
 | POST | `/api/auth/login` | Public | Password login. |
 | POST | `/api/auth/login/totp` | Public flow | Complete TOTP login challenge. |
 | POST | `/api/auth/login/passkey/options` | Public flow | Create passkey-login challenge options. |
@@ -37,7 +37,9 @@ The public HTML license route is `/LICENSE`, not an API endpoint.
 
 | Method | Path | Access | Purpose |
 |---|---|---|---|
-| GET | `/api/security` | Auth | Security posture, passkeys, TOTP/recovery summary, API-token metadata. |
+| GET | `/api/security` | Auth | Security posture, local-password state, passkeys, TOTP/recovery summary, API-token metadata. |
+| PUT | `/api/security/password` | Browser session | Set/bootstrap or change the local password; rotates browser-session version. |
+| POST | `/api/security/sessions/revoke-others` | Browser session + step-up when local password exists | Invalidate other browser sessions and issue a fresh current session. |
 | POST | `/api/security/api-tokens` | Auth + step-up | Create a scoped bearer token; plaintext token is returned once. |
 | DELETE | `/api/security/api-tokens/:id` | Auth + step-up | Revoke one of the current user's API tokens. |
 | POST | `/api/security/totp/setup` | Auth + step-up | Begin TOTP enrollment. |
@@ -180,10 +182,12 @@ Plugins can register additional routes/actions according to their manifest and p
 | PUT | `/api/admin/settings/security` | Admin | Security/trust settings. |
 | POST | `/api/admin/security/rotate-master-key` | Admin + step-up | Rotate encrypted-secret master key. |
 | PUT | `/api/admin/settings/oidc` | Admin | OIDC configuration. |
-| PATCH | `/api/admin/settings/registration` | Admin | Registration policy. |
+| PATCH | `/api/admin/settings/registration` | Admin | Deprecated; returns `410` because public signup cannot be re-enabled after bootstrap. |
 | PUT | `/api/admin/settings/integrations` | Admin | Integration credentials/settings. |
 | GET | `/api/admin/users` | Admin | User list. |
-| PATCH | `/api/admin/users/:id` | Admin | Change user role/state supported by UI. |
+| POST | `/api/admin/users` | Admin | Create a dashboard account with an initial local password. |
+| PATCH | `/api/admin/users/:id` | Admin | Change user role/state; access changes revoke existing browser sessions. |
+| POST | `/api/admin/users/:id/revoke-sessions` | Admin | Revoke another user's browser sessions. |
 | DELETE | `/api/admin/users/:id` | Admin | Delete user subject to safety rules. |
 
 ## Cloudflare, Certbot, and tunnels

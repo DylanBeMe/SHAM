@@ -66,7 +66,7 @@ test('stale client responses cannot overwrite newer admin or site-tool state', (
   const adminStart = app.indexOf('async function loadAdmin()');
   const adminEnd = app.indexOf('function renderUsers', adminStart);
   const admin = app.slice(adminStart, adminEnd);
-  assert.ok(admin.indexOf('if (requestId !== state.adminRequest) return;') < admin.indexOf("$('#registration-toggle').checked"));
+  assert.ok(admin.indexOf('if (requestId !== state.adminRequest) return;') < admin.indexOf('renderUsers(users.users)'));
   assert.match(app, /function siteToolsRequestIsCurrent/);
   assert.match(app, /state\.siteToolsRequest \+= 1;[\s\S]*toolsSite = null/);
   assert.match(app, /siteToolsRequestIsCurrent\(site, sessionId\)/);

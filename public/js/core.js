@@ -116,7 +116,7 @@ async function api(url, options = {}) {
   const response = await fetch(url, request);
   if (response.status === 204) return null;
   const payload = await response.json().catch(() => ({}));
-  if (response.status === 401 && state.user && !state.sessionExpired) {
+  if (response.status === 401 && state.user && payload.error === 'Authentication required.' && !state.sessionExpired) {
     state.sessionExpired = true;
     toast('Your session expired. Sign in again.', 'warning');
     setTimeout(() => location.reload(), 800);
@@ -261,6 +261,17 @@ function finishAction(value) {
   if (!actionResolver) return;
   const resolve = actionResolver;
   actionResolver = null;
+  const actionInput = $('#action-input');
+  const actionUsername = $('#action-username');
+  if (actionInput) {
+    actionInput.value = '';
+    actionInput.type = 'text';
+    actionInput.name = 'action-input';
+    actionInput.autocomplete = 'off';
+    actionInput.placeholder = '';
+  }
+  if (actionUsername) actionUsername.value = '';
+  $('#action-error').textContent = '';
   closeModal($('#action-dialog'));
   resolve(value);
 }
@@ -277,6 +288,12 @@ function requestAction({ title, message, confirmLabel = 'Continue', danger = fal
   $('#action-input-label').textContent = inputLabel || 'Value';
   const actionInput = $('#action-input');
   const passwordInput = inputType === 'password' || ['current-password', 'new-password'].includes(autocomplete) || /password/i.test(inputLabel);
+  if (passwordInput && state.user?.hasLocalPassword === false) {
+    toast('This SSO account needs a local password before password-confirmed actions can run. Set one in Security.', 'warning');
+    if (state.currentSection !== 'security') showSection('security');
+    requestAnimationFrame(() => $('#new-password')?.focus());
+    return Promise.resolve(false);
+  }
   actionInput.type = passwordInput ? 'password' : inputType;
   actionInput.autocomplete = passwordInput && autocomplete === 'off' ? 'current-password' : autocomplete;
   actionInput.name = passwordInput ? 'password' : 'action-input';
@@ -555,6 +572,7 @@ function commandItems() {
     { label: 'Performance', hint: 'Metrics & alerts', keywords: 'cpu memory latency p50 p95 errors throughput requests event loop disk queues', run: () => showSection('performance') },
     { label: 'Security', hint: 'Account protection', keywords: 'totp passkeys recovery api tokens bearer', run: () => showSection('security') },
     { label: 'Extensions', hint: 'Plugins and playground', keywords: 'plugin development extension', run: () => showSection('plugins') },
+    { label: 'Settings: Appearance', hint: 'Color mode and theme', keywords: 'settings appearance theme light dark palette', run: () => { showSection('operations'); setOperationsTab('appearance'); } },
     { label: 'Documentation', hint: 'Guides, API and plugin docs', keywords: 'help api cli docker compose git runtime', run: () => showSection('documentation') },
     { label: 'New site', hint: 'Deploy', keywords: 'upload git docker image dockerfile compose', run: openNewSite }
   ];
@@ -629,11 +647,13 @@ document.addEventListener('keydown', (event) => {
 });
 
 function showSection(sectionName, { refresh = true } = {}) {
+  const previousSection = state.currentSection;
   if (sectionName === 'admin') {
     sectionName = 'operations';
     if (typeof setOperationsTab === 'function') setOperationsTab('administration');
   }
   const changed = state.currentSection !== sectionName;
+  if (changed && previousSection === 'security' && sectionName !== 'security' && typeof clearTransientSecuritySecrets === 'function') clearTransientSecuritySecrets();
   state.currentSection = sectionName;
   $$('.view-section').forEach((section) => { section.hidden = section.id !== `section-${sectionName}`; });
   $$('.nav-item').forEach((item) => {
@@ -649,9 +669,10 @@ function showSection(sectionName, { refresh = true } = {}) {
   if (refresh && changed && sectionName === 'performance') loadPerformance();
   if (refresh && changed && sectionName === 'security') loadSecurity();
   if (refresh && changed && sectionName === 'plugins') loadPlugins(false);
-  if (refresh && changed && sectionName === 'operations') {
+  if (sectionName === 'operations' && state.user?.role !== 'admin' && typeof setOperationsTab === 'function') setOperationsTab('appearance');
+  if (refresh && changed && sectionName === 'operations' && state.user?.role === 'admin') {
     loadOperations();
-    if (state.user?.role === 'admin') loadAdmin();
+    loadAdmin();
   }
   if (sectionName === 'performance') startPerformancePolling();
   else stopPerformancePolling();

@@ -41,8 +41,6 @@ async function loadAdmin() {
   try {
     const [settings, users] = await Promise.all([api('/api/admin/settings'), api('/api/admin/users')]);
     if (requestId !== state.adminRequest) return;
-    $('#registration-toggle').checked = settings.registrationEnabled;
-    $('#registration-label').textContent = settings.registrationEnabled ? 'Open' : 'Locked';
     const integrations = settings.integrations;
     $('#cloudflare-zone').value = integrations.cloudflareZoneId || '';
     $('#cloudflare-ip').value = integrations.cloudflareTargetIp || '';
@@ -91,22 +89,31 @@ function renderUsers(users) {
     <td><select data-field="role" ${user.id === state.user.id ? 'disabled' : ''}><option value="user" ${user.role === 'user' ? 'selected' : ''}>User</option><option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Admin</option></select></td>
     <td><label class="switch-row"><span>${user.active ? 'Active' : 'Disabled'}</span><input data-field="active" type="checkbox" ${user.active ? 'checked' : ''} ${user.id === state.user.id ? 'disabled' : ''}><span class="switch"></span></label></td>
     <td>${escapeHtml(formatDate(user.createdAt))}</td>
-    <td><div class="site-actions"><button class="button secondary" data-user-action="save" type="button">Save</button><button class="button danger" data-user-action="delete" type="button" ${user.id === state.user.id ? 'disabled' : ''}>Delete</button></div></td>
+    <td><div class="site-actions"><button class="button secondary" data-user-action="save" type="button">Save</button><button class="button ghost" data-user-action="revoke-sessions" type="button" ${user.id === state.user.id ? 'disabled' : ''}>Revoke sessions</button><button class="button danger" data-user-action="delete" type="button" ${user.id === state.user.id ? 'disabled' : ''}>Delete</button></div></td>
   </tr>`).join('');
 }
 
 $('#add-plugin-trusted-key').addEventListener('click', () => addPluginTrustedKeyRow());
 
-$('#registration-toggle').addEventListener('change', async (event) => {
-  event.target.disabled = true;
+$('#admin-create-user-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = $('#admin-create-user-form button[type="submit"]');
+  setBusy(button, true, 'Creating…');
   try {
-    const result = await api('/api/admin/settings/registration', { method: 'PATCH', body: { enabled: event.target.checked } });
-    $('#registration-label').textContent = result.registrationEnabled ? 'Open' : 'Locked';
-    toast(result.registrationEnabled ? 'Registration opened.' : 'Registration locked.');
-  } catch (error) {
-    event.target.checked = !event.target.checked;
-    toast(error.message, 'error');
-  } finally { event.target.disabled = false; }
+    await api('/api/admin/users', { method: 'POST', body: {
+      username: $('#admin-create-username').value,
+      password: $('#admin-create-password').value,
+      role: $('#admin-create-role').value
+    } });
+    $('#admin-create-user-form').reset();
+    $('#admin-create-role').value = 'user';
+    toast('Dashboard user created.');
+    await loadAdmin();
+  } catch (error) { toast(error.message, 'error'); }
+  finally {
+    $('#admin-create-password').value = '';
+    setBusy(button, false);
+  }
 });
 
 $('#clear-cloudflare-token').addEventListener('change', (event) => {
@@ -189,11 +196,15 @@ $('#users-table').addEventListener('click', async (event) => {
   const id = Number(row.dataset.userId);
   const action = button.dataset.userAction;
   if (action === 'delete' && !(await requestAction({ title: 'Delete this user?', message: 'This dashboard account will permanently lose access.', confirmLabel: 'Delete user', danger: true }))) return;
-  setBusy(button, true, action === 'save' ? 'Saving…' : 'Deleting…');
+  if (action === 'revoke-sessions' && !(await requestAction({ title: 'Revoke this user’s browser sessions?', message: 'All of this user’s current dashboard sessions will be invalidated. API tokens are not affected.', confirmLabel: 'Revoke sessions', danger: true }))) return;
+  setBusy(button, true, action === 'save' ? 'Saving…' : action === 'revoke-sessions' ? 'Revoking…' : 'Deleting…');
   try {
     if (action === 'save') {
       await api(`/api/admin/users/${id}`, { method: 'PATCH', body: { role: $('[data-field="role"]', row).value, active: $('[data-field="active"]', row).checked } });
-      toast('User updated.');
+      toast('User updated. Access changes revoke existing browser sessions.');
+    } else if (action === 'revoke-sessions') {
+      await api(`/api/admin/users/${id}/revoke-sessions`, { method: 'POST' });
+      toast('User browser sessions revoked.');
     } else {
       await api(`/api/admin/users/${id}`, { method: 'DELETE' });
       toast('User deleted.');
