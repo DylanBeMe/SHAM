@@ -1,13 +1,14 @@
 const crypto = require('node:crypto');
 const { promisify } = require('node:util');
 const jwt = require('jsonwebtoken');
-const { JWT_SECRET, AUTH_RATE_LIMIT_BUCKETS } = require('./config');
+const { JWT_SECRET, AUTH_RATE_LIMIT_BUCKETS, PUBLIC_ORIGIN } = require('./config');
 const { db } = require('./db');
 
 const COOKIE_NAME = 'sham_token';
 const TOKEN_TTL_SECONDS = 12 * 60 * 60;
 const MFA_TOKEN_TTL_SECONDS = 5 * 60;
 const scrypt = promisify(crypto.scrypt);
+let lastRevokedSessionSweep = 0;
 
 function normalizeUsername(value) {
   const username = String(value || '').trim();
@@ -70,11 +71,31 @@ function verifyMfaToken(token) {
 }
 
 function issueToken(user) {
+  const sessionVersion = Number(user.session_version ?? db.prepare('SELECT session_version FROM users WHERE id = ?').get(user.id)?.session_version ?? 1);
   return jwt.sign(
-    { sub: String(user.id), username: user.username, role: user.role },
+    { sub: String(user.id), username: user.username, role: user.role, sv: sessionVersion, sid: crypto.randomUUID() },
     JWT_SECRET,
     { algorithm: 'HS256', expiresIn: TOKEN_TTL_SECONDS, issuer: 'sham', audience: 'sham-dashboard' }
   );
+}
+
+function sweepRevokedSessions(now = Date.now()) {
+  if (now - lastRevokedSessionSweep < 5 * 60_000) return;
+  db.prepare('DELETE FROM revoked_sessions WHERE expires_at <= ?').run(now);
+  lastRevokedSessionSweep = now;
+}
+
+function revokeCurrentSession(req) {
+  if (!req.authSessionId || !req.user?.id || !req.authTokenExpiresAt) return false;
+  sweepRevokedSessions();
+  db.prepare('INSERT OR REPLACE INTO revoked_sessions (sid, user_id, expires_at) VALUES (?, ?, ?)')
+    .run(req.authSessionId, req.user.id, req.authTokenExpiresAt);
+  return true;
+}
+
+function rotateSessionVersion(userId) {
+  db.prepare('UPDATE users SET session_version = session_version + 1 WHERE id = ?').run(Number(userId));
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(Number(userId));
 }
 
 function setAuthCookie(req, res, token) {
@@ -85,13 +106,13 @@ function setAuthCookie(req, res, token) {
     'Path=/',
     `Max-Age=${TOKEN_TTL_SECONDS}`
   ];
-  if (req.secure) parts.push('Secure');
+  if (req.secure || PUBLIC_ORIGIN.startsWith('https://')) parts.push('Secure');
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 
 function clearAuthCookie(req, res) {
   const parts = [`${COOKIE_NAME}=`, 'HttpOnly', 'SameSite=Strict', 'Path=/', 'Max-Age=0'];
-  if (req.secure) parts.push('Secure');
+  if (req.secure || PUBLIC_ORIGIN.startsWith('https://')) parts.push('Secure');
   res.setHeader('Set-Cookie', parts.join('; '));
 }
 
@@ -142,9 +163,15 @@ function resolveUser(req) {
       issuer: 'sham',
       audience: 'sham-dashboard'
     });
-    const user = db.prepare('SELECT id, username, role, active, totp_enabled, created_at FROM users WHERE id = ?').get(Number(payload.sub));
-    if (!user?.active) return null;
+    if (!payload.sid || !Number.isSafeInteger(Number(payload.sv))) return null;
+    const user = db.prepare('SELECT id, username, role, active, totp_enabled, password_configured, session_version, created_at FROM users WHERE id = ?').get(Number(payload.sub));
+    if (!user?.active || Number(payload.sv) !== Number(user.session_version)) return null;
+    const now = Date.now();
+    sweepRevokedSessions(now);
+    if (db.prepare('SELECT 1 FROM revoked_sessions WHERE sid = ? AND expires_at > ?').get(String(payload.sid), now)) return null;
     req.authType = 'session';
+    req.authSessionId = String(payload.sid);
+    req.authTokenExpiresAt = Number(payload.exp || 0) * 1000;
     return user;
   } catch {
     return null;
@@ -186,7 +213,7 @@ function sameOriginGuard(req, res, next) {
   if (origin) {
     try {
       const supplied = new URL(origin).origin;
-      const expected = new URL(`${req.protocol}://${req.get('host')}`).origin;
+      const expected = PUBLIC_ORIGIN || new URL(`${req.protocol}://${req.get('host')}`).origin;
       if (supplied !== expected) return res.status(403).json({ error: 'Origin validation failed.' });
     } catch {
       return res.status(403).json({ error: 'Origin validation failed.' });
@@ -248,5 +275,7 @@ module.exports = {
   requireAdmin,
   sameOriginGuard,
   createRateLimiter,
-  tokenHash
+  tokenHash,
+  revokeCurrentSession,
+  rotateSessionVersion
 };

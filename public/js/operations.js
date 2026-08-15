@@ -6,8 +6,11 @@ function operationsSite() {
 }
 
 function setOperationsTab(name, { focus = false } = {}) {
+  const available = $$('[data-operations-tab]').filter((button) => !button.hidden);
+  const requested = available.find((button) => button.dataset.operationsTab === name) || available[0] || $('#operations-tab-appearance');
+  const selected = requested?.dataset.operationsTab || 'appearance';
   $$('[data-operations-tab]').forEach((button) => {
-    const active = button.dataset.operationsTab === name;
+    const active = button.dataset.operationsTab === selected && !button.hidden;
     button.classList.toggle('active', active);
     button.setAttribute('aria-selected', String(active));
     button.tabIndex = active ? 0 : -1;
@@ -21,7 +24,7 @@ $$('[data-operations-tab]').forEach((button) => {
   button.addEventListener('keydown', (event) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
-    const tabs = $$('[data-operations-tab]');
+    const tabs = $$('[data-operations-tab]').filter((tab) => !tab.hidden);
     const current = tabs.indexOf(button);
     const next = event.key === 'Home' ? tabs[0]
       : event.key === 'End' ? tabs.at(-1)
@@ -51,11 +54,19 @@ function addEnvironmentRow(variable = {}) {
     try {
       const result = await api(`/api/sites/${site.id}/environment/${encodeURIComponent(key)}/reveal`, { method: 'POST', body: { password } });
       const input = $('[data-env-value]', row);
-      input.value = result.value || '';
+      const revealedValue = result.value || '';
+      input.value = revealedValue;
       input.type = 'text';
+      const remask = () => {
+        if (!input.isConnected || input.value !== revealedValue) return;
+        input.value = '';
+        input.type = 'password';
+      };
+      input.addEventListener('blur', remask, { once: true });
+      setTimeout(remask, 30_000);
       input.focus();
       input.select();
-      toast(`${key} revealed in the editor. Saving without changes preserves the same secret.`,'warning');
+      toast(`${key} revealed temporarily. It will be masked again after 30 seconds or when you leave the field.`,'warning');
     } catch (error) { toast(error.message, 'error'); }
     finally { setBusy(event.currentTarget, false); }
   });

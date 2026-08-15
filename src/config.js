@@ -81,6 +81,21 @@ function trustProxyEnv() {
   return raw;
 }
 
+function publicOriginEnv() {
+  const raw = String(process.env.SHAM_PUBLIC_ORIGIN || '').trim();
+  if (!raw) return '';
+  let parsed;
+  try { parsed = new URL(raw); }
+  catch { throw new Error('SHAM_PUBLIC_ORIGIN must be an absolute http:// or https:// URL.'); }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('SHAM_PUBLIC_ORIGIN must be an absolute http:// or https:// URL without credentials, query, or fragment.');
+  }
+  if (parsed.pathname && parsed.pathname !== '/') {
+    throw new Error('SHAM_PUBLIC_ORIGIN must not include a path.');
+  }
+  return parsed.origin;
+}
+
 function listEnv(name) {
   return String(process.env[name] || '')
     .split(/[\s,;]+/)
@@ -202,6 +217,7 @@ module.exports = {
   GIT_TIMEOUT_MS: integerEnv('SHAM_GIT_TIMEOUT_SECONDS', 600, 30, 3600) * 1000,
   PREVIEW_TTL_HOURS: integerEnv('SHAM_PREVIEW_TTL_HOURS', 24, 1, 720),
   JWT_SECRET: loadJwtSecret(),
+  PUBLIC_ORIGIN: publicOriginEnv(),
   TRUST_PROXY: trustProxyEnv(),
   TRUSTED_EDGE_PROXIES: cidrListEnv('SHAM_TRUSTED_EDGE_PROXIES')
 };

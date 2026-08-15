@@ -238,7 +238,7 @@ test('extracted route modules receive every declared dependency from server wiri
 
   const sites = read('src/routes/sites.js');
   assert.match(sites, /edgeProxy, getSetting, siteRows, getSiteOr404/);
-  assert.match(server, /rotateMasterKey, verifyPassword, stepUpLimiter, writeCloudflareCredentials/);
+  assert.match(server, /rotateMasterKey, verifyPassword, hashPassword, rotateSessionVersion, stepUpLimiter, writeCloudflareCredentials/);
 });
 
 test('bootstrap prints startup stacks so Docker smoke failures identify the bad route', () => {

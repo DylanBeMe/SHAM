@@ -85,6 +85,8 @@ function renderPerformance(payload) {
 let performanceHistorySiteId = null;
 let performanceRules = [];
 let performanceRuleEditIndex = null;
+let performanceRulesSaveRequest = 0;
+let performanceRulesSaveTail = Promise.resolve();
 
 const PERFORMANCE_RULE_KINDS = {
   cpu_percent: { label: 'CPU', unit: '%', help: 'Alert when CPU reaches or exceeds this percentage.' },
@@ -107,11 +109,10 @@ function syncPerformanceSiteSelector(sites) {
     $('#performance-site-history-detail').textContent = 'No managed runtime has performance history yet.';
     $('#performance-alert-rules').innerHTML = '<p class="muted">Choose a site to configure alert rules.</p>';
     $('#performance-add-rule').disabled = true;
-    $('#performance-save-rules').disabled = true;
+    $('#performance-rules-status').textContent = '';
     return;
   }
   $('#performance-add-rule').disabled = false;
-  $('#performance-save-rules').disabled = false;
   select.value = String(next);
   if (Number(performanceHistorySiteId) !== next) {
     performanceHistorySiteId = next;
@@ -158,8 +159,29 @@ function renderAlertRules(rules = performanceRules) {
       ${admin ? '<div class="performance-rule-actions"><button class="button ghost compact" data-edit-performance-rule type="button">Edit</button><button class="button danger compact" data-remove-performance-rule type="button">Remove</button></div>' : ''}
     </article>`;
   }).join('') : '<div class="empty-state compact performance-rule-empty"><p>No site-specific rules. Global thresholds still apply.</p></div>';
-  $('#performance-save-rules').hidden = !admin;
   $('#performance-add-rule').hidden = !admin;
+}
+
+async function persistPerformanceRules(siteId, rulesSnapshot) {
+  const requestId = ++performanceRulesSaveRequest;
+  const status = $('#performance-rules-status');
+  if (status) status.textContent = 'Saving changes…';
+  try {
+    await api(`/api/sites/${siteId}/alert-rules`, { method: 'PUT', body: { rules: rulesSnapshot } });
+    if (requestId === performanceRulesSaveRequest && Number($('#performance-site-history-select').value || 0) === siteId && status) status.textContent = 'Saved.';
+  } catch (error) {
+    if (requestId === performanceRulesSaveRequest && status) status.textContent = 'Save failed.';
+    toast(error.message, 'error');
+    if (Number($('#performance-site-history-select').value || 0) === siteId) await loadSelectedSitePerformance();
+  }
+}
+
+function saveCurrentPerformanceRules() {
+  const siteId = Number($('#performance-site-history-select').value || 0);
+  if (!siteId) return Promise.resolve();
+  const snapshot = performanceRules.map((rule) => ({ ...rule }));
+  performanceRulesSaveTail = performanceRulesSaveTail.catch(() => {}).then(() => persistPerformanceRules(siteId, snapshot));
+  return performanceRulesSaveTail;
 }
 
 function updatePerformanceRuleHelp() {
@@ -194,6 +216,7 @@ async function loadSelectedSitePerformance() {
   if (siteId !== performanceHistorySiteId) return;
   renderSiteHistory(history.history || []);
   renderAlertRules(rules.rules || []);
+  $('#performance-rules-status').textContent = '';
 }
 
 $('#performance-site-history-select').addEventListener('change', () => {
@@ -221,6 +244,7 @@ $('#performance-rule-form').addEventListener('submit', (event) => {
   renderAlertRules(performanceRules);
   closeModal($('#performance-rule-dialog'));
   performanceRuleEditIndex = null;
+  saveCurrentPerformanceRules();
 });
 $('#performance-rule-dialog').addEventListener('close', () => { performanceRuleEditIndex = null; });
 $('#performance-alert-rules').addEventListener('click', (event) => {
@@ -231,15 +255,8 @@ $('#performance-alert-rules').addEventListener('click', (event) => {
   if (event.target.closest('[data-remove-performance-rule]')) {
     performanceRules.splice(index, 1);
     renderAlertRules(performanceRules);
+    saveCurrentPerformanceRules();
   }
-});
-$('#performance-save-rules').addEventListener('click', async (event) => {
-  const siteId = Number($('#performance-site-history-select').value || 0);
-  if (!siteId) return;
-  setBusy(event.currentTarget, true, 'Saving…');
-  try { await api(`/api/sites/${siteId}/alert-rules`, { method: 'PUT', body: { rules: performanceRules } }); toast('Site alert rules saved.'); await loadSelectedSitePerformance(); }
-  catch (error) { toast(error.message, 'error'); }
-  finally { setBusy(event.currentTarget, false); }
 });
 
 let performanceRequest = null;

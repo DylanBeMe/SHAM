@@ -10,12 +10,15 @@ Use `.env.example` as the machine-readable template for the current release. Thi
 |---|---|---|
 | `SHAM_HOST` | `127.0.0.1` | Dashboard bind address. |
 | `SHAM_PORT` | `8080` | Dashboard TCP port. |
+| `SHAM_PUBLIC_ORIGIN` | empty | Canonical browser-facing dashboard origin, for example `https://sham.example.com`. Recommended behind a reverse proxy; used for WebAuthn/OIDC origin handling, secure-cookie decisions, and CSRF validation. |
 | `SHAM_SELF_SIGNED_HTTPS` | `false` | Direct/local installs: generate a self-signed certificate and serve the dashboard over HTTPS. Trust the generated `dashboard-tls/cert.pem` on client devices. |
 | `SHAM_OPENSSL_BIN` | `openssl` | OpenSSL executable used to generate the local self-signed dashboard certificate. |
 | `SHAM_TRUST_PROXY` | `loopback` | Express trust-proxy setting. Keep this narrow unless you fully control the proxy path. |
 | `SHAM_TRUSTED_EDGE_PROXIES` | empty | Explicit reverse-proxy peers allowed to supply Cloudflare visitor identity headers. |
 
 Do not broadly trust private address ranges merely because SHAM sits behind a reverse proxy. Origin access and trusted proxy peers should be designed together.
+
+When SHAM is published behind a reverse proxy, set `SHAM_PUBLIC_ORIGIN` to the exact origin users open in their browser. This prevents proxy `Host` rewriting from producing mismatched WebAuthn RP IDs or OIDC callback URLs.
 
 `SHAM_SELF_SIGNED_HTTPS` is intended for running SHAM itself directly on a local host, for example `https://192.168.1.25:8080`. With `SHAM_HOST=0.0.0.0` (or a concrete LAN address), SHAM includes detected LAN IPs in the generated certificate and stores the key/certificate under `SHAM_DATA_PATH/dashboard-tls/`. Import the generated certificate into client trust stores before relying on WebAuthn/passkeys. Use a normal publicly trusted or internally managed certificate for production ingress.
 

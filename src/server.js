@@ -23,7 +23,8 @@ const {
   HTTP_REQUEST_TIMEOUT_MS,
   TRUST_PROXY,
   EDGE_HTTP_PORT,
-  EDGE_HTTPS_PORT
+  EDGE_HTTPS_PORT,
+  PUBLIC_ORIGIN
 } = require('./config');
 const { db, getSetting, setSetting, audit: writeAudit } = require('./db');
 const {
@@ -40,7 +41,9 @@ const {
   requireAdmin,
   sameOriginGuard,
   createRateLimiter,
-  tokenHash
+  tokenHash,
+  revokeCurrentSession,
+  rotateSessionVersion
 } = require('./security');
 const { bool, validateSiteInput, safeRelativePath } = require('./validation');
 const { auditObfuscationCompatibility } = require('./obfuscation-audit');
@@ -263,6 +266,7 @@ function publicUser(user) {
     active: Boolean(user.active),
     totpEnabled: Boolean(user.totp_enabled),
     passkeyCount: Number(user.passkey_count || 0),
+    hasLocalPassword: user.password_configured !== undefined ? Boolean(user.password_configured) : true,
     createdAt: user.created_at
   } : null;
 }
@@ -272,7 +276,7 @@ function userCount() {
 }
 
 function registrationEnabled() {
-  return getSetting('registration_enabled', '0') === '1';
+  return userCount() === 0;
 }
 
 function securityUser(id) {
@@ -280,7 +284,7 @@ function securityUser(id) {
 }
 
 function requestOrigin(req) {
-  return new URL(`${req.protocol}://${req.get('host')}`).origin;
+  return PUBLIC_ORIGIN || new URL(`${req.protocol}://${req.get('host')}`).origin;
 }
 
 function requestRpId(req) {
@@ -581,8 +585,8 @@ const routeContext = {
 
 const adminRouteContext = {
   app, requireAuth, requireAdmin, pluginManager, publicUser, multipart, pluginUpload, validatePluginArchiveFile, bool,
-  cleanupUploadedFiles, serializePluginMutation, integrationSettings, securitySettings, oidcSettings, normalizeOidcIssuer, getSetting, setSetting, setSecretSetting,
-  getSecretSetting, rotateMasterKey, verifyPassword, stepUpLimiter, writeCloudflareCredentials, recordAudit, manager, siteRows, getSiteOr404,
+  cleanupUploadedFiles, serializePluginMutation, integrationSettings, securitySettings, oidcSettings, normalizeOidcIssuer, normalizeUsername, getSetting, setSetting, setSecretSetting,
+  getSecretSetting, rotateMasterKey, verifyPassword, hashPassword, rotateSessionVersion, stepUpLimiter, writeCloudflareCredentials, recordAudit, manager, siteRows, getSiteOr404,
   syncCloudflareRecord, cloudflarePortWarning, syncCloudflareFirewall, acquireCertificateOperation, releaseCertificateOperation,
   stopRunningSitesOnPort, renewalNeedsPort80, issueCertificate, hasCertificate, restoreEnabledSites, renewCertificates, db,
   activeAdminCount, registrationEnabled, integerSetting, net, crypto, edgeProxy, EDGE_HTTP_PORT, DASHBOARD_PORT
@@ -610,7 +614,7 @@ app.get('/api/bootstrap', optionalAuth, (req, res) => {
     setupCompleted: req.user?.role !== 'admin' || getSetting('setup_completed', '0') === '1',
     oidcEnabled: getSetting('oidc_enabled', '0') === '1' && Boolean(getSetting('oidc_issuer', '')) && Boolean(getSetting('oidc_client_id', '')),
     capabilities: req.user ? operationsManager.capabilities() : undefined,
-    secureContext: req.secure
+    secureContext: req.secure || PUBLIC_ORIGIN.startsWith('https://')
   });
 });
 
@@ -708,7 +712,7 @@ app.get(OIDC_CALLBACK_PATH, authLimiter, async (req, res) => {
       const password = await hashPassword(crypto.randomBytes(48).toString('base64url'));
       const role = getSetting('oidc_default_role', 'user') === 'admin' ? 'admin' : 'user';
       const created = db.transaction(() => {
-        const result = db.prepare('INSERT INTO users (username, password_hash, password_salt, role, active) VALUES (?, ?, ?, ?, 1)').run(username, password.hash, password.salt, role);
+        const result = db.prepare('INSERT INTO users (username, password_hash, password_salt, role, active, password_configured) VALUES (?, ?, ?, ?, 1, 0)').run(username, password.hash, password.salt, role);
         db.prepare('INSERT INTO oidc_identities (issuer, subject, user_id, email, last_login_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)')
           .run(normalizedIssuer, String(claims.sub), Number(result.lastInsertRowid), String(claims.email || '').slice(0, 320));
         return Number(result.lastInsertRowid);
@@ -728,18 +732,18 @@ app.get(OIDC_CALLBACK_PATH, authLimiter, async (req, res) => {
 
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   try {
+    if (userCount() > 0) return res.status(403).json({ error: 'Public registration is disabled. Ask an administrator to create your account.' });
     const username = normalizeUsername(req.body.username);
     const { salt, hash } = await hashPassword(req.body.password);
     const createUser = db.transaction(() => {
       const count = userCount();
-      if (count > 0 && !registrationEnabled()) throw new Error('Registration is currently locked.');
-      const role = count === 0 ? 'admin' : 'user';
+      if (count > 0) throw new Error('Public registration is disabled. Ask an administrator to create your account.');
       const result = db.prepare(`
         INSERT INTO users (username, password_hash, password_salt, role)
-        VALUES (?, ?, ?, ?)
-      `).run(username, hash, salt, role);
-      if (count === 0) setSetting('registration_enabled', '0');
-      return db.prepare('SELECT id, username, role, active, created_at FROM users WHERE id = ?').get(result.lastInsertRowid);
+        VALUES (?, ?, ?, 'admin')
+      `).run(username, hash, salt);
+      setSetting('registration_enabled', '0');
+      return db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
     });
     const user = createUser();
     setAuthCookie(req, res, issueToken(user));
@@ -813,13 +817,52 @@ app.post('/api/auth/login/passkey/verify', authLimiter, (req, res) => {
 });
 
 app.post('/api/auth/logout', optionalAuth, (req, res) => {
-  if (req.user) recordAudit(req.user.id, 'auth.logout');
+  if (req.user) {
+    revokeCurrentSession(req);
+    recordAudit(req.user.id, 'auth.logout');
+  }
   clearAuthCookie(req, res);
   res.status(204).end();
 });
 
 app.get('/api/auth/me', requireAuth, (req, res) => res.json({ user: publicUser(securityUser(req.user.id)) }));
 
+
+app.put('/api/security/password', requireAuth, stepUpLimiter, async (req, res) => {
+  if (req.authType !== 'session') return res.status(403).json({ error: 'Change your password from an authenticated browser session.' });
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    const hasLocalPassword = Boolean(user.password_configured);
+    if (hasLocalPassword) {
+      const currentPassword = typeof req.body.currentPassword === 'string' && req.body.currentPassword.length <= 200 ? req.body.currentPassword : '';
+      if (!(await verifyPassword(currentPassword, user.password_salt, user.password_hash))) return res.status(401).json({ error: 'Current password confirmation failed.' });
+    } else if (!db.prepare('SELECT 1 FROM oidc_identities WHERE user_id = ? LIMIT 1').get(req.user.id)) {
+      return res.status(400).json({ error: 'This account cannot bootstrap a local password from the current sign-in method.' });
+    }
+    const next = await hashPassword(req.body.newPassword);
+    db.prepare('UPDATE users SET password_hash = ?, password_salt = ?, password_configured = 1, session_version = session_version + 1 WHERE id = ?')
+      .run(next.hash, next.salt, req.user.id);
+    const updated = securityUser(req.user.id);
+    setAuthCookie(req, res, issueToken(updated));
+    recordAudit(req.user.id, hasLocalPassword ? 'security.password.change' : 'security.password.bootstrap');
+    res.json({ user: publicUser(updated), sessionsRevoked: true });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
+app.post('/api/security/sessions/revoke-others', requireAuth, stepUpLimiter, async (req, res) => {
+  if (req.authType !== 'session') return res.status(403).json({ error: 'Revoke browser sessions from an authenticated browser session.' });
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (user.password_configured) {
+    const password = typeof req.body.password === 'string' && req.body.password.length <= 200 ? req.body.password : '';
+    if (!(await verifyPassword(password, user.password_salt, user.password_hash))) return res.status(401).json({ error: 'Password confirmation failed.' });
+  } else if (!db.prepare('SELECT 1 FROM oidc_identities WHERE user_id = ? LIMIT 1').get(req.user.id)) {
+    return res.status(400).json({ error: 'This account does not have a step-up authentication method configured.' });
+  }
+  const updated = rotateSessionVersion(req.user.id);
+  setAuthCookie(req, res, issueToken(updated));
+  recordAudit(req.user.id, 'security.sessions.revoke-others');
+  res.json({ user: publicUser(securityUser(req.user.id)) });
+});
 
 app.get('/api/security', requireAuth, (req, res) => {
   const user = securityUser(req.user.id);

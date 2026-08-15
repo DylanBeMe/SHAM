@@ -182,6 +182,8 @@ ensureColumn('sites', 'cloudflare_auto_sync', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'totp_secret', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'recovery_codes_json', "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn('users', 'password_configured', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('users', 'session_version', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('plugins', 'permissions_json', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('plugins', 'signature_status', "TEXT NOT NULL DEFAULT 'unsigned'");
 ensureColumn('plugins', 'isolation', "TEXT NOT NULL DEFAULT 'in-process'");
@@ -199,6 +201,16 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS revoked_sessions (
+    sid TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_revoked_sessions_expiry ON revoked_sessions(expires_at);
 
   CREATE TABLE IF NOT EXISTS oidc_identities (
     issuer TEXT NOT NULL,
@@ -587,6 +599,14 @@ db.exec(`
   INSERT OR IGNORE INTO settings (key, value) VALUES ('cloudflare_reconcile_minutes', '15');
 
 `);
+
+const oidcPasswordMigration = db.prepare("SELECT value FROM settings WHERE key = 'oidc_password_config_migrated'").get();
+if (oidcPasswordMigration?.value !== '1') {
+  db.transaction(() => {
+    db.prepare('UPDATE users SET password_configured = 0 WHERE id IN (SELECT DISTINCT user_id FROM oidc_identities)').run();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('oidc_password_config_migrated', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP").run();
+  })();
+}
 
 ensureColumn('site_performance_samples', 'p50_response_ms', 'REAL NOT NULL DEFAULT 0');
 ensureColumn('site_performance_samples', 'restarts', 'INTEGER NOT NULL DEFAULT 0');
