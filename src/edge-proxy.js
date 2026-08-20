@@ -6,7 +6,7 @@ const path = require('node:path');
 const httpProxy = require('http-proxy');
 const { EDGE_HTTP_PORT, EDGE_HTTPS_PORT, EDGE_HOST, HTTP_REQUEST_TIMEOUT_MS } = require('./config');
 const { certbotPaths, hasCertificate } = require('./integrations');
-const { requestHostname, requestIdentity, INTERNAL_EDGE_TOKEN } = require('./site-manager');
+const { requestHostname, requestIdentity, INTERNAL_EDGE_TOKEN } = require('./sites/shared');
 
 function listen(server, port, host) {
   return new Promise((resolve, reject) => {
